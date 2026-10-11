@@ -9,44 +9,47 @@ import re
 st.set_page_config(page_title="Rooming List Checker", page_icon="🏨", layout="wide")
 
 # ==============================================================================
-# BỘ LỌC LÀM SẠCH DỮ LIỆU ĐÃ ĐƯỢC FIX LỖI "CHỮ Đ" VÀ NGÀY THÁNG
+# BỘ LỌC LÀM SẠCH VÀ NHẬN DIỆN NGÔN NGỮ
 # ==============================================================================
 def normalize_name(name):
-    """Hàm bóc tách tiếng Việt, xử lý chữ Đ và xóa danh xưng"""
     if not isinstance(name, str) or pd.isna(name):
         return ""
-    # SỬA LỖI CHỮ Đ: Thay thế Đ thành D trước khi xóa dấu
     name = name.replace('Đ', 'D').replace('đ', 'd')
-    
-    # Chuyển tiếng Việt có dấu thành không dấu
     name = unicodedata.normalize('NFD', name).encode('ascii', 'ignore').decode('utf-8')
     name = name.upper()
-    
-    # Chỉ giữ lại chữ cái và khoảng trắng (xóa dấu *, phẩy, v.v.)
     name = re.sub(r'[^A-Z\s]', ' ', name)
-    
-    # Xóa các danh xưng MR, MS, MRS, MISS
     name = re.sub(r'\b(MR|MS|MRS|MISS)\b', '', name)
-    
-    # Xóa khoảng trắng thừa
     name = ' '.join(name.split())
     return name
 
 def normalize_date(date_val):
-    """Hàm ép định dạng ngày tháng thông minh"""
     if pd.isna(date_val) or str(date_val).strip() in ["", "NAN", "NAT"]:
         return ""
     val_str = str(date_val).strip()
     try:
-        # Nếu chuỗi bắt đầu bằng YYYY-MM-DD (Định dạng của Excel ẩn bên trong)
         if len(val_str) >= 10 and val_str[4] == '-':
             dt = pd.to_datetime(val_str)
         else:
-            # Nếu là chuỗi người dùng gõ kiểu DD-MM-YY hoặc DD/MM/YY
             dt = pd.to_datetime(val_str, dayfirst=True)
         return dt.strftime('%d-%m-%y')
     except:
         return val_str
+
+def guess_nationality(name):
+    """Thuật toán phát hiện khách nước ngoài dựa trên cấu trúc từ"""
+    if not isinstance(name, str) or name.strip() == "":
+        return "Chưa rõ"
+    name = name.upper()
+    # 1. Chứa các chữ cái không có trong bảng chữ cái tiếng Việt
+    if re.search(r'[FJWZ]', name):
+        return "🌍 Nước Ngoài"
+    # 2. Chứa từ kết thúc bằng các phụ âm không dùng trong tiếng Việt
+    words = name.split()
+    for word in words:
+        if len(word) > 1:
+            if re.search(r'[BDFJKLRSVWXZ]$', word) or word.endswith('TH'):
+                return "🌍 Nước Ngoài"
+    return "Việt Nam"
 
 # ==============================================================================
 # HÀM TẠO FILE EXCEL MẪU
@@ -54,7 +57,7 @@ def normalize_date(date_val):
 def create_template_excel():
     data = {
         'So_Phong': ['', '0201', '0201', '0301'],
-        'Ten_Khach': ['Khach auto gan phong', 'Huynh Duc Phong', 'Nguyen Tai Uyen', 'Khach Moi'],
+        'Ten_Khach': ['Joe Woolf', 'Huynh Duc Phong', 'Nguyen Tai Uyen', 'Khach Moi'],
         'Ngay_Den': ['03-10-26', '03-10-26', '03-10-26', '03-10-26'],
         'Ngay_Di': ['04-10-26', '04-10-26', '04-10-26', '05-10-26']
     }
@@ -72,7 +75,7 @@ def create_template_excel():
 # ==============================================================================
 # GIAO DIỆN CHÍNH
 # ==============================================================================
-st.title("Phần mềm Đối chiếu Rooming List (Bản Cập Nhật Vá Lỗi)")
+st.title("Phần mềm Đối chiếu Rooming List (Tích hợp Dashboard)")
 
 with st.info("Tải file Excel mẫu về máy để điền thông tin đoàn trước khi tải lên (Để trống 'So_Phong' nếu muốn Tool tự gán)."):
     st.download_button(
@@ -95,14 +98,11 @@ if xml_file and excel_file:
         start_check = st.button("🚀 Bắt đầu đối chiếu", type="primary", use_container_width=True)
 
     if start_check:
-        with st.spinner("Đang làm sạch dữ liệu (Xử lý chữ Đ, đổi Format ngày), tự động gán phòng và check Share Room..."):
+        with st.spinner("Đang xử lý dữ liệu và nhận diện Quốc tịch..."):
             try:
-                # ---------------------------------------------------------
-                # BƯỚC 1: BÓC TÁCH FILE XML (OPERA)
-                # ---------------------------------------------------------
+                # --- ĐỌC XML (OPERA) ---
                 tree = ET.parse(xml_file)
                 root = tree.getroot()
-                
                 opera_guests = []
                 for guest in root.iter('G_CONFIRMATION_NO'):
                     room = guest.find('ROOM').text if guest.find('ROOM') is not None else ''
@@ -119,9 +119,7 @@ if xml_file and excel_file:
                 df_opera = pd.DataFrame(opera_guests)
                 opera_all_names = df_opera['Ten_Khach_Opera'].tolist()
 
-                # ---------------------------------------------------------
-                # BƯỚC 2: ĐỌC FILE EXCEL (KHÁCH ĐOÀN)
-                # ---------------------------------------------------------
+                # --- ĐỌC EXCEL (ĐOÀN) ---
                 df_excel = pd.read_excel(excel_file, dtype=str)
                 if 'Ten_Khach' in df_excel.columns:
                     df_excel['Ten_Khach_Excel'] = df_excel['Ten_Khach'].apply(normalize_name)
@@ -130,20 +128,15 @@ if xml_file and excel_file:
                     st.stop()
                 
                 df_excel = df_excel.rename(columns={'Ngay_Den': 'Ngay_Den_Excel', 'Ngay_Di': 'Ngay_Di_Excel'})
-                
                 if 'Ngay_Den_Excel' in df_excel.columns:
                     df_excel['Ngay_Den_Excel'] = df_excel['Ngay_Den_Excel'].apply(normalize_date)
                 if 'Ngay_Di_Excel' in df_excel.columns:
                     df_excel['Ngay_Di_Excel'] = df_excel['Ngay_Di_Excel'].apply(normalize_date)
-                    
                 if 'So_Phong' not in df_excel.columns:
                     df_excel['So_Phong'] = ""
 
-                # ---------------------------------------------------------
-                # BƯỚC 3: XỬ LÝ TRÙNG TÊN VÀ TỰ ĐỘNG GÁN SỐ PHÒNG
-                # ---------------------------------------------------------
+                # --- TỰ ĐỘNG GÁN SỐ PHÒNG ---
                 room_mapping = df_opera.groupby('Ten_Khach_Opera')['So_Phong'].apply(list).to_dict()
-
                 def auto_assign_room(row):
                     current_room = str(row['So_Phong']).strip().upper()
                     if current_room in ["", "NAN", "NAT", "NONE"]:
@@ -156,9 +149,24 @@ if xml_file and excel_file:
 
                 df_excel['So_Phong'] = df_excel.apply(auto_assign_room, axis=1)
 
-                # ---------------------------------------------------------
-                # BƯỚC 4: SẮP XẾP KHÁCH TRONG PHÒNG (SHARE ROOM)
-                # ---------------------------------------------------------
+                # --- DASHBOARD TỔNG QUAN ---
+                # Đếm số phòng và số khách
+                tong_khach_opera = len(df_opera)
+                tong_phong_opera = df_opera['So_Phong'].nunique()
+                
+                tong_khach_excel = len(df_excel)
+                # Đếm phòng Excel (bỏ qua những khách chưa gán được phòng)
+                phong_excel_valid = df_excel['So_Phong'].astype(str).str.upper().replace(['', 'NAN', 'NAT', 'NONE', 'CHƯA GÁN ĐƯỢC'], np.nan).dropna()
+                tong_phong_excel = phong_excel_valid.nunique()
+
+                st.markdown("### 📊 THỐNG KÊ TỔNG QUAN ĐOÀN")
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Tổng Khách (Opera)", f"{tong_khach_opera} pax")
+                m2.metric("Tổng Phòng (Opera)", f"{tong_phong_opera} phòng")
+                m3.metric("Tổng Khách (Excel)", f"{tong_khach_excel} pax", delta=f"{tong_khach_excel - tong_khach_opera} khách" if tong_khach_excel != tong_khach_opera else None)
+                m4.metric("Tổng Phòng (Excel)", f"{tong_phong_excel} phòng", delta=f"{tong_phong_excel - tong_phong_opera} phòng" if tong_phong_excel != tong_phong_opera else None)
+
+                # --- ĐỐI CHIẾU ---
                 df_opera = df_opera.sort_values(by=['So_Phong', 'Ten_Khach_Opera'])
                 df_excel = df_excel.sort_values(by=['So_Phong', 'Ten_Khach_Excel'])
 
@@ -167,13 +175,16 @@ if xml_file and excel_file:
 
                 df_compare = pd.merge(df_opera, df_excel, on=['So_Phong', 'Guest_Index'], how='outer', indicator=True)
                 
-                # ---------------------------------------------------------
-                # BƯỚC 5: BỘ LỌC KIỂM TRA ĐA TRƯỜNG HỢP
-                # ---------------------------------------------------------
+                # --- PHÂN LOẠI QUỐC TỊCH (Khách Nước Ngoài) ---
+                # Quét tên khách từ Opera (ưu tiên), nếu không có thì lấy tên từ Excel
+                df_compare['Quoc_Tich'] = df_compare.apply(
+                    lambda row: guess_nationality(row['Ten_Khach_Opera']) if pd.notna(row['Ten_Khach_Opera']) else guess_nationality(row['Ten_Khach_Excel']), 
+                    axis=1
+                )
+
                 def deep_check_status(row):
                     merge_status = row['_merge']
                     room = str(row['So_Phong'])
-                    
                     name_op = str(row['Ten_Khach_Opera'])
                     name_ex = str(row['Ten_Khach_Excel'])
                     date_in_op = str(row['Ngay_Den_Opera'])
@@ -181,54 +192,47 @@ if xml_file and excel_file:
                     date_in_ex = str(row['Ngay_Den_Excel'])
                     date_out_ex = str(row['Ngay_Di_Excel'])
                     
-                    if room == "Chưa gán được":
-                        return "Lỗi nặng: Khách Excel không có trên hệ thống Opera"
-                        
-                    if merge_status == 'left_only':
-                        return "Hủy phòng / Excel gửi sót khách này"
-                        
+                    if room == "Chưa gán được": return "Lỗi nặng: Khách Excel không có trên hệ thống Opera"
+                    if merge_status == 'left_only': return "Hủy phòng / Excel gửi sót khách này"
                     if merge_status == 'right_only':
-                        if date_in_ex in ['NAN', ''] or date_out_ex in ['NAN', '']:
-                            return "Lỗi định dạng: File Excel bị trống ngày In/Out"
-                        if name_ex in opera_all_names:
-                            return "Sai số phòng (Khách này đang xếp ở phòng khác trên Opera)"
-                        if row['Guest_Index'] > 0:
-                            return "Phát sinh thêm người ghép (Dư pax so với Opera)"
-                        else:
-                            return "Phòng mới (Có trong Excel, chưa có trên Opera)"
+                        if date_in_ex in ['NAN', ''] or date_out_ex in ['NAN', '']: return "Lỗi định dạng: File Excel bị trống ngày In/Out"
+                        if name_ex in opera_all_names: return "Sai số phòng (Khách này đang xếp ở phòng khác trên Opera)"
+                        if row['Guest_Index'] > 0: return "Phát sinh thêm người ghép (Dư pax so với Opera)"
+                        else: return "Phòng mới (Có trong Excel, chưa có trên Opera)"
                             
                     if merge_status == 'both':
-                        if date_in_ex in ['NAN', ''] or date_out_ex in ['NAN', '']:
-                            return "Lỗi định dạng: File Excel bị trống ngày In/Out"
-
+                        if date_in_ex in ['NAN', ''] or date_out_ex in ['NAN', '']: return "Lỗi định dạng: File Excel bị trống ngày In/Out"
                         name_mismatch = (name_op != name_ex)
                         date_mismatch = (date_in_op != date_in_ex) or (date_out_op != date_out_ex)
                         
-                        if name_mismatch and date_mismatch:
-                            return "Sai lệch KÉP (Sai tên & Sai Lịch trình)"
-                        elif name_mismatch:
-                            return "Sai lệch Tên khách"
-                        elif date_mismatch:
-                            return "Sai lệch ngày In/Out"
-                        else:
-                            return "Khớp hoàn toàn"
-                            
+                        if name_mismatch and date_mismatch: return "Sai lệch KÉP (Sai tên & Sai Lịch trình)"
+                        elif name_mismatch: return "Sai lệch Tên khách"
+                        elif date_mismatch: return "Sai lệch ngày In/Out"
+                        else: return "Khớp hoàn toàn"
                     return "Cần kiểm tra thủ công"
 
                 df_compare['Trang_Thai'] = df_compare.apply(deep_check_status, axis=1)
-                df_compare = df_compare.drop(columns=['_merge', 'Guest_Index'])
                 
+                # Làm gọn bảng và sắp xếp
+                df_compare = df_compare.drop(columns=['_merge', 'Guest_Index'])
                 df_compare['Is_Perfect'] = df_compare['Trang_Thai'] == 'Khớp hoàn toàn'
                 df_compare = df_compare.sort_values(by=['Is_Perfect', 'So_Phong'])
                 df_compare = df_compare.drop(columns=['Is_Perfect'])
+                
+                # Sắp xếp lại thứ tự cột cho đẹp
+                cols = ['So_Phong', 'Quoc_Tich', 'Trang_Thai', 'Ten_Khach_Opera', 'Ten_Khach_Excel', 'Ngay_Den_Opera', 'Ngay_Di_Opera', 'Ngay_Den_Excel', 'Ngay_Di_Excel']
+                df_compare = df_compare[cols]
 
-                # ---------------------------------------------------------
-                # BƯỚC 6: XUẤT KẾT QUẢ VÀ HIỂN THỊ
-                # ---------------------------------------------------------
                 st.markdown("---")
                 st.success("✅ Đã xử lý tất cả các trường hợp ngoại lệ thành công!")
-                st.dataframe(df_compare, use_container_width=True)
+                
+                # Hiển thị trên web với màu sắc Highlight cho Khách nước ngoài
+                def highlight_foreigner(s):
+                    return ['background-color: #ffcccc' if v == '🌍 Nước Ngoài' else '' for v in s]
+                
+                st.dataframe(df_compare.style.apply(highlight_foreigner, subset=['Quoc_Tich']), use_container_width=True)
 
+                # --- XUẤT FILE EXCEL ---
                 output = BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df_compare.to_excel(writer, index=False, sheet_name='Ket_Qua_Doi_Chieu')
@@ -249,7 +253,7 @@ if xml_file and excel_file:
                     st.download_button(
                         label="📥 TẢI FILE BÁO CÁO CÁC LỖI ĐỐI CHIẾU",
                         data=output.getvalue(),
-                        file_name="Bao_Cao_Rooming_List_Da_Sua_Loi.xlsx",
+                        file_name="Bao_Cao_Rooming_List_Final.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True
                     )
