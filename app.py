@@ -36,14 +36,12 @@ def normalize_date(date_val):
         return val_str
 
 def guess_nationality(name):
-    """Thuật toán phát hiện khách nước ngoài dựa trên cấu trúc từ"""
+    """Thuật toán phát hiện khách nước ngoài"""
     if not isinstance(name, str) or name.strip() == "":
         return "Chưa rõ"
     name = name.upper()
-    # 1. Chứa các chữ cái không có trong bảng chữ cái tiếng Việt
     if re.search(r'[FJWZ]', name):
         return "🌍 Nước Ngoài"
-    # 2. Chứa từ kết thúc bằng các phụ âm không dùng trong tiếng Việt
     words = name.split()
     for word in words:
         if len(word) > 1:
@@ -98,7 +96,7 @@ if xml_file and excel_file:
         start_check = st.button("🚀 Bắt đầu đối chiếu", type="primary", use_container_width=True)
 
     if start_check:
-        with st.spinner("Đang xử lý dữ liệu và nhận diện Quốc tịch..."):
+        with st.spinner("Đang xử lý dữ liệu, nhận diện Quốc tịch và chia Sheet báo cáo..."):
             try:
                 # --- ĐỌC XML (OPERA) ---
                 tree = ET.parse(xml_file)
@@ -150,12 +148,10 @@ if xml_file and excel_file:
                 df_excel['So_Phong'] = df_excel.apply(auto_assign_room, axis=1)
 
                 # --- DASHBOARD TỔNG QUAN ---
-                # Đếm số phòng và số khách
                 tong_khach_opera = len(df_opera)
                 tong_phong_opera = df_opera['So_Phong'].nunique()
                 
                 tong_khach_excel = len(df_excel)
-                # Đếm phòng Excel (bỏ qua những khách chưa gán được phòng)
                 phong_excel_valid = df_excel['So_Phong'].astype(str).str.upper().replace(['', 'NAN', 'NAT', 'NONE', 'CHƯA GÁN ĐƯỢC'], np.nan).dropna()
                 tong_phong_excel = phong_excel_valid.nunique()
 
@@ -175,8 +171,7 @@ if xml_file and excel_file:
 
                 df_compare = pd.merge(df_opera, df_excel, on=['So_Phong', 'Guest_Index'], how='outer', indicator=True)
                 
-                # --- PHÂN LOẠI QUỐC TỊCH (Khách Nước Ngoài) ---
-                # Quét tên khách từ Opera (ưu tiên), nếu không có thì lấy tên từ Excel
+                # --- PHÂN LOẠI QUỐC TỊCH ---
                 df_compare['Quoc_Tich'] = df_compare.apply(
                     lambda row: guess_nationality(row['Ten_Khach_Opera']) if pd.notna(row['Ten_Khach_Opera']) else guess_nationality(row['Ten_Khach_Excel']), 
                     axis=1
@@ -213,50 +208,38 @@ if xml_file and excel_file:
 
                 df_compare['Trang_Thai'] = df_compare.apply(deep_check_status, axis=1)
                 
-                # Làm gọn bảng và sắp xếp
+                # --- CHUẨN BỊ 2 TẬP DỮ LIỆU ĐỂ CHIA SHEET ---
                 df_compare = df_compare.drop(columns=['_merge', 'Guest_Index'])
-                df_compare['Is_Perfect'] = df_compare['Trang_Thai'] == 'Khớp hoàn toàn'
-                df_compare = df_compare.sort_values(by=['Is_Perfect', 'So_Phong'])
-                df_compare = df_compare.drop(columns=['Is_Perfect'])
-                
-                # Sắp xếp lại thứ tự cột cho đẹp
                 cols = ['So_Phong', 'Quoc_Tich', 'Trang_Thai', 'Ten_Khach_Opera', 'Ten_Khach_Excel', 'Ngay_Den_Opera', 'Ngay_Di_Opera', 'Ngay_Den_Excel', 'Ngay_Di_Excel']
                 df_compare = df_compare[cols]
 
+                # 1. Danh sách LỖI (Sheet 1)
+                df_errors = df_compare[df_compare['Trang_Thai'] != 'Khớp hoàn toàn'].copy()
+                df_errors = df_errors.sort_values(by=['Trang_Thai', 'So_Phong'])
+
+                # 2. Danh sách TỔNG (Sheet 2) sắp xếp theo thứ tự số phòng từ nhỏ tới lớn
+                df_full = df_compare.copy()
+                df_full = df_full.sort_values(by=['So_Phong', 'Ten_Khach_Opera'])
+
+                # ---------------------------------------------------------
+                # BƯỚC 6: HIỂN THỊ LÊN WEB VÀ XUẤT RA EXCEL 2 SHEET
+                # ---------------------------------------------------------
                 st.markdown("---")
-                st.success("✅ Đã xử lý tất cả các trường hợp ngoại lệ thành công!")
+                st.success("✅ Đã xử lý xong! Bạn có thể xem trước kết quả ở 2 Tab bên dưới hoặc tải file Excel về.")
                 
-                # Hiển thị trên web với màu sắc Highlight cho Khách nước ngoài
                 def highlight_foreigner(s):
                     return ['background-color: #ffcccc' if v == '🌍 Nước Ngoài' else '' for v in s]
                 
-                st.dataframe(df_compare.style.apply(highlight_foreigner, subset=['Quoc_Tich']), use_container_width=True)
+                # Chia 2 Tabs xem trực tiếp trên Website
+                tab1, tab2 = st.tabs(["⚠️ CÁC PHÒNG CẦN LƯU Ý", "📋 DANH SÁCH TỔNG (THEO SỐ PHÒNG)"])
+                
+                with tab1:
+                    if df_errors.empty:
+                        st.info("🎉 Tuyệt vời! Tất cả các phòng đều khớp hoàn toàn, không có khách nào sai lệch.")
+                    else:
+                        st.dataframe(df_errors.style.apply(highlight_foreigner, subset=['Quoc_Tich']), use_container_width=True)
+                
+                with tab2:
+                    st.dataframe(df_full.style.apply(highlight_foreigner, subset=['Quoc_Tich']), use_container_width=True)
 
-                # --- XUẤT FILE EXCEL ---
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    df_compare.to_excel(writer, index=False, sheet_name='Ket_Qua_Doi_Chieu')
-                    worksheet = writer.sheets['Ket_Qua_Doi_Chieu']
-                    for column in worksheet.columns:
-                        max_length = 0
-                        column_letter = column[0].column_letter
-                        for cell in column:
-                            try:
-                                if len(str(cell.value)) > max_length:
-                                    max_length = len(str(cell.value))
-                            except:
-                                pass
-                        worksheet.column_dimensions[column_letter].width = max_length + 2
-
-                _, dwn_col, _ = st.columns([1, 1, 1])
-                with dwn_col:
-                    st.download_button(
-                        label="📥 TẢI FILE BÁO CÁO CÁC LỖI ĐỐI CHIẾU",
-                        data=output.getvalue(),
-                        file_name="Bao_Cao_Rooming_List_Final.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
-
-            except Exception as e:
-                st.error(f"Đã xảy ra lỗi hệ thống: {e}")
+                # Tạo file Excel có 2 Sheets
