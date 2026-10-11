@@ -6,25 +6,68 @@ from io import BytesIO
 
 # Cấu hình giao diện Streamlit
 st.set_page_config(page_title="Rooming List Checker", page_icon="🏨", layout="wide")
+
+# ==============================================================================
+# HÀM TẠO FILE EXCEL MẪU TRỰC TIẾP TỪ CODE ĐỂ TẢI XUỐNG
+# ==============================================================================
+def create_template_excel():
+    # Tạo dữ liệu mẫu
+    data = {
+        'So_Phong': ['', '0201', ''],
+        'Ten_Khach': ['Nguyen Van A', 'Tran Thi B', 'Le Van C'],
+        'Ngay_Den': ['03-10-26', '03-10-26', '03-10-26'],
+        'Ngay_Di': ['04-10-26', '05-10-26', '04-10-26']
+    }
+    df_template = pd.DataFrame(data)
+    
+    # Tạo buffer xuất ra bộ nhớ
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_template.to_excel(writer, index=False, sheet_name='Danh_Sach_Doan')
+        
+        # Tự động điều chỉnh độ rộng cột cho đẹp
+        worksheet = writer.sheets['Danh_Sach_Doan']
+        worksheet.column_dimensions['A'].width = 15
+        worksheet.column_dimensions['B'].width = 30
+        worksheet.column_dimensions['C'].width = 20
+        worksheet.column_dimensions['D'].width = 20
+        
+    return output.getvalue()
+
+# ==============================================================================
+# PHẦN GIAO DIỆN CHÍNH
+# ==============================================================================
 st.title("Phần mềm Đối chiếu Rooming List (Opera vs Excel)")
-st.markdown("""
-**HƯỚNG DẪN SỬ DỤNG:**
-1. File Excel từ khách đoàn cần có các cột: `Ten_Khach`, `So_Phong`, `Ngay_Den`, `Ngay_Di`.
-2. Nếu file Excel chưa có số phòng, để trống cột `So_Phong`, phần mềm sẽ **tự động gán** dựa trên tên khách từ hệ thống Opera.
-3. Kéo thả file XML (từ Opera) và file Excel (từ khách đoàn) vào bên dưới.
-""")
+
+# Thêm khu vực tải file mẫu có viền màu xanh (info)
+with st.info("Tải file Excel mẫu về máy để điền thông tin đoàn trước khi tải lên (Nếu bạn chưa có form chuẩn)."):
+    st.download_button(
+        label="📥 Tải File Excel Mẫu (Template)",
+        data=create_template_excel(),
+        file_name="Template_Rooming_List_Doan.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Định dạng chuẩn gồm 4 cột: So_Phong, Ten_Khach, Ngay_Den, Ngay_Di"
+    )
+
+st.markdown("---")
+st.markdown("### VUI LÒNG TẢI FILE LÊN ĐỂ KIỂM TRA")
 
 # Tạo 2 cột để upload file
 col1, col2 = st.columns(2)
 with col1:
-    xml_file = st.file_uploader("1. Tải lên file XML (Từ Opera)", type=['xml'])
+    xml_file = st.file_uploader("1. Tải lên file XML (Từ hệ thống Opera)", type=['xml'])
 with col2:
-    excel_file = st.file_uploader("2. Tải lên file Excel (Từ Khách đoàn)", type=['xlsx', 'xls'])
+    excel_file = st.file_uploader("2. Tải lên file Excel (Khách đoàn đã điền theo Mẫu)", type=['xlsx', 'xls'])
 
 # Bắt đầu xử lý khi cả 2 file đã được tải lên
 if xml_file and excel_file:
-    if st.button("Bắt đầu đối chiếu", type="primary"):
-        with st.spinner("Đang xử lý dữ liệu..."):
+    # Nút bấm căn giữa bằng columns
+    _, btn_col, _ = st.columns([1, 1, 1])
+    with btn_col:
+        start_check = st.button("🚀 Bắt đầu đối chiếu", type="primary", use_container_width=True)
+
+    if start_check:
+        with st.spinner("Đang tự động gán phòng và so khớp dữ liệu..."):
             try:
                 # ---------------------------------------------------------
                 # BƯỚC 1: BÓC TÁCH FILE XML (OPERA)
@@ -39,7 +82,7 @@ if xml_file and excel_file:
                     arrival = guest.find('ARRIVAL').text if guest.find('ARRIVAL') is not None else ''
                     departure = guest.find('DEPARTURE').text if guest.find('DEPARTURE') is not None else ''
                     
-                    # Làm sạch tên khách (Bỏ dấu *, thay phẩy thành khoảng trắng, viết hoa)
+                    # Làm sạch tên
                     clean_name = str(name).replace('*', '').replace(',', ' ').strip().upper()
                     
                     opera_guests.append({
@@ -51,18 +94,17 @@ if xml_file and excel_file:
                 df_opera = pd.DataFrame(opera_guests)
 
                 # ---------------------------------------------------------
-                # BƯỚC 2: ĐỌC VÀ CHUẨN HÓA FILE EXCEL (KHÁCH ĐOÀN)
+                # BƯỚC 2: ĐỌC VÀ CHUẨN HÓA FILE EXCEL
                 # ---------------------------------------------------------
                 df_excel = pd.read_excel(excel_file, dtype=str)
                 
-                # Làm sạch Tên khách bên Excel để đồng bộ định dạng với Opera
+                # Kiểm tra cột Tên khách
                 if 'Ten_Khach' in df_excel.columns:
                     df_excel['Ten_Khach_Excel'] = df_excel['Ten_Khach'].astype(str).str.strip().str.upper()
                 else:
-                    st.error("Lỗi: File Excel của bạn không có cột 'Ten_Khach'. Vui lòng kiểm tra lại.")
+                    st.error("Lỗi: File Excel của bạn tải lên không đúng định dạng mẫu (Thiếu cột 'Ten_Khach').")
                     st.stop()
                 
-                # Đổi tên các cột ngày tháng để dễ so khớp
                 df_excel = df_excel.rename(columns={
                     'Ngay_Den': 'Ngay_Den_Excel',
                     'Ngay_Di': 'Ngay_Di_Excel'
@@ -71,33 +113,26 @@ if xml_file and excel_file:
                 # ---------------------------------------------------------
                 # BƯỚC 3: TỰ ĐỘNG GÁN SỐ PHÒNG (NẾU THIẾU)
                 # ---------------------------------------------------------
-                # Khởi tạo "từ điển" map từ Tên Khách Opera -> Số Phòng Opera
                 room_mapping = dict(zip(df_opera['Ten_Khach_Opera'], df_opera['So_Phong']))
                 
-                # Đảm bảo file Excel luôn có cột 'So_Phong' để xử lý
                 if 'So_Phong' not in df_excel.columns:
                     df_excel['So_Phong'] = ""
 
-                # Hàm kiểm tra và điền số phòng
                 def auto_assign_room(row):
-                    # Nếu ô Số phòng đang trống hoặc chứa giá trị rỗng (NaN, NaT, None)
                     if pd.isna(row['So_Phong']) or str(row['So_Phong']).strip() in ["", "NAN", "NAT"]:
-                        # Tìm trong Opera, nếu thấy Tên thì gán phòng, không thấy thì ghi "Chưa gán được"
                         return room_mapping.get(row['Ten_Khach_Excel'], "Chưa gán được")
-                    # Nếu đã có sẵn số phòng trong Excel thì giữ nguyên
                     return str(row['So_Phong']).strip()
 
                 df_excel['So_Phong'] = df_excel.apply(auto_assign_room, axis=1)
 
                 # ---------------------------------------------------------
-                # BƯỚC 4: ĐỐI CHIẾU DỮ LIỆU BẰNG OUTER JOIN
+                # BƯỚC 4: ĐỐI CHIẾU DỮ LIỆU
                 # ---------------------------------------------------------
                 df_compare = pd.merge(df_opera, df_excel, on='So_Phong', how='outer', indicator=True)
                 
-                # Lọc ra các điều kiện sai lệch
                 conditions = [
                     (df_compare['_merge'] == 'left_only'),
-                    (df_compare['So_Phong'] == "Chưa gán được"), # Nhận diện những khách Excel không tự map được phòng
+                    (df_compare['So_Phong'] == "Chưa gán được"), 
                     (df_compare['_merge'] == 'right_only'),
                     (df_compare['_merge'] == 'both') & (df_compare['Ten_Khach_Opera'] != df_compare['Ten_Khach_Excel']),
                     (df_compare['_merge'] == 'both') & ((df_compare['Ngay_Den_Opera'] != df_compare['Ngay_Den_Excel']) | (df_compare['Ngay_Di_Opera'] != df_compare['Ngay_Di_Excel'])),
@@ -107,38 +142,51 @@ if xml_file and excel_file:
                 choices = [
                     'Hủy phòng (Có trong Opera, không có trong Excel)',
                     'Lỗi gán phòng (Có tên Excel, không map được vào Opera)',
-                    'Phòng mới (Có trong Excel, không có trong Opera)',
-                    'Sai lệch Tên Khách (Kiểm tra lại)',
-                    'Sai lịch trình In/Out',
+                    'Phòng mới thêm vào (Có trong Excel, chưa nhập Opera)',
+                    'Tên khách chưa khớp',
+                    'Sai lệch ngày In/Out',
                     'Khớp hoàn toàn'
                 ]
                 
                 df_compare['Trang_Thai'] = np.select(conditions, choices, default='Cần kiểm tra lại')
-                
-                # Xóa cột kỹ thuật _merge và sắp xếp dữ liệu, ưu tiên hiển thị lỗi lên đầu
                 df_compare = df_compare.drop(columns=['_merge']).sort_values(by=['Trang_Thai', 'So_Phong'])
 
                 # ---------------------------------------------------------
-                # BƯỚC 5: HIỂN THỊ VÀ XUẤT KẾT QUẢ ĐỂ TẢI VỀ
+                # BƯỚC 5: HIỂN THỊ KẾT QUẢ VÀ TẢI XUỐNG
                 # ---------------------------------------------------------
+                st.markdown("---")
                 st.success("✅ Đã xử lý đối chiếu và tự động gán phòng thành công!")
                 
-                # Bảng xem trước trên Web
                 st.dataframe(df_compare, use_container_width=True)
 
-                # Tạo buffer xuất file Excel
                 output = BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df_compare.to_excel(writer, index=False, sheet_name='Ket_Qua_Doi_Chieu')
-                
-                # Nút Download
-                st.download_button(
-                    label="📥 TẢI FILE BÁO CÁO (EXCEL)",
-                    data=output.getvalue(),
-                    file_name="Bao_Cao_Rooming_List_Pullman.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                    
+                    # Tự động canh độ rộng cột cho báo cáo xuất ra
+                    worksheet = writer.sheets['Ket_Qua_Doi_Chieu']
+                    for column in worksheet.columns:
+                        max_length = 0
+                        column_letter = column[0].column_letter
+                        for cell in column:
+                            try:
+                                if len(str(cell.value)) > max_length:
+                                    max_length = len(str(cell.value))
+                            except:
+                                pass
+                        adjusted_width = (max_length + 2)
+                        worksheet.column_dimensions[column_letter].width = adjusted_width
+
+                _, dwn_col, _ = st.columns([1, 1, 1])
+                with dwn_col:
+                    st.download_button(
+                        label="📥 TẢI FILE KẾT QUẢ ĐỐI CHIẾU (EXCEL)",
+                        data=output.getvalue(),
+                        file_name="Ket_Qua_Doi_Chieu_Rooming_List.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
 
             except Exception as e:
                 st.error(f"Đã xảy ra lỗi: {e}")
-                st.info("💡 Lời khuyên: Đảm bảo file Excel của bạn ĐÃ CHUẨN HÓA các tiêu đề cột đúng y hệt như sau: Ten_Khach, Ngay_Den, Ngay_Di, So_Phong (chữ viết hoa đầu từ, ngăn cách bởi dấu gạch dưới).")
+                st.info("💡 Vui lòng đảm bảo bạn sử dụng đúng file Excel Template được tải từ hệ thống này.")
