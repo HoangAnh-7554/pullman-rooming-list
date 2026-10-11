@@ -6,7 +6,6 @@ from io import BytesIO
 import unicodedata
 import re
 
-# Cấu hình giao diện Streamlit
 st.set_page_config(page_title="Rooming List Checker Master", page_icon="🏨", layout="wide")
 
 # ==============================================================================
@@ -44,14 +43,14 @@ def normalize_date(date_val):
         return val_str
 
 def standardize_room_type(rt):
-    """Chuẩn hóa Loại phòng (King/Twin) để so sánh chéo giữa Opera và Excel"""
+    """Chuẩn hóa Loại phòng (King/Twin) để so sánh chéo"""
     if pd.isna(rt) or str(rt).strip() in ["", "NAN", "NAT", "NONE"]: 
         return "UNKNOWN"
     rt_str = str(rt).upper().strip()
-    # Nhận diện King / Double (VD: KGB, KING, DBL, DOUBLE)
+    # Nhận diện King / Double
     if 'K' in rt_str or 'KING' in rt_str or 'DBL' in rt_str or 'DOUBLE' in rt_str:
         return "KING"
-    # Nhận diện Twin (VD: TWB, TWIN, TW)
+    # Nhận diện Twin
     if 'T' in rt_str or 'TWIN' in rt_str:
         return "TWIN"
     return rt_str
@@ -69,10 +68,18 @@ def guess_nationality(name):
     return "Việt Nam"
 
 def find_column(df, keywords):
-    """Tự động tìm kiếm tên cột dựa trên từ khóa (Auto-detect Headers)"""
-    for col in df.columns:
-        c_clean = str(col).upper().replace('_', ' ').replace('-', ' ')
-        for kw in keywords:
+    """Tự động tìm kiếm tên cột (Đã nâng cấp chống bắt nhầm cột)"""
+    # Bước 1: Ưu tiên khớp chính xác tuyệt đối (Exact Match)
+    for kw in keywords:
+        for col in df.columns:
+            c_clean = str(col).upper().replace('_', ' ').replace('-', ' ').strip()
+            if kw.strip() == c_clean:
+                return col
+                
+    # Bước 2: Khớp một phần (Partial Match) - Ưu tiên các keyword đứng trước
+    for kw in keywords:
+        for col in df.columns:
+            c_clean = str(col).upper().replace('_', ' ').replace('-', ' ')
             if kw in c_clean:
                 return col
     return None
@@ -104,7 +111,7 @@ def create_template_excel():
 # ==============================================================================
 st.title("Phần mềm Đối chiếu Rooming List (Ultimate Master)")
 
-with st.info("Hỗ trợ tải thẳng file gốc của Công ty lữ hành. Giờ đây đã tự động Check Lệch Giường (King/Twin)."):
+with st.info("Hỗ trợ tải thẳng file gốc của Công ty lữ hành. Tự động Check Lệch Giường (King/Twin) siêu chuẩn."):
     st.download_button(
         label="📥 TẢI FILE EXCEL MẪU TRẮNG",
         data=create_template_excel(),
@@ -125,7 +132,7 @@ if xml_file and excel_file:
         start_check = st.button("🚀 Bắt đầu Quét Đa Luồng", type="primary", use_container_width=True)
 
     if start_check:
-        with st.spinner("Hệ thống đang dò tìm cột, nhận diện đảo tên, bầu chọn phòng và check Loại Giường..."):
+        with st.spinner("Hệ thống đang dò tìm cột, phân tích giường ngủ và tính toán thẻ khóa..."):
             try:
                 # ---------------- BƯỚC 1: ĐỌC XML OPERA ----------------
                 tree = ET.parse(xml_file)
@@ -133,8 +140,7 @@ if xml_file and excel_file:
                 opera_guests = []
                 for guest in root.iter('G_CONFIRMATION_NO'):
                     status = guest.find('RESV_STATUS').text if guest.find('RESV_STATUS') is not None else ''
-                    if 'CANCEL' in str(status).upper():
-                        continue
+                    if 'CANCEL' in str(status).upper(): continue
                         
                     room = guest.find('ROOM').text if guest.find('ROOM') is not None else ''
                     name = guest.find('FULL_NAME').text if guest.find('FULL_NAME') is not None else ''
@@ -169,7 +175,7 @@ if xml_file and excel_file:
                 else:
                     df_excel = pd.read_excel(BytesIO(excel_bytes), dtype=str)
 
-                # MAP CỘT
+                # MAP CỘT THÔNG MINH (Chống bắt nhầm cột)
                 col_name = find_column(df_excel, ['FULL NAME', 'TEN KHACH', 'TÊN KHÁCH', 'HỌ TÊN', 'HỌ VÀ TÊN', 'GUEST'])
                 col_room = find_column(df_excel, ['SO PHONG', 'SỐ PHÒNG', 'ROOM NO', 'ROOM NUMBER'])
                 col_room_type = find_column(df_excel, ['ROOM TYPE', 'LOAI PHONG', 'LOẠI PHÒNG', 'TYPE'])
