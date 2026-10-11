@@ -138,10 +138,10 @@ if xml_file and excel_file:
                 excel_bytes = excel_file.read()
                 df_raw = pd.read_excel(BytesIO(excel_bytes))
                 
-                # Bỏ qua các dòng rác Header của file Tour
+                # Bỏ qua các dòng rác Header của file Tour an toàn tuyệt đối với mọi kiểu dữ liệu
                 is_tour_format = False
                 for idx, row in df_raw.head(10).iterrows():
-                    row_str = ' '.join(row.astype(str).str.upper())
+                    row_str = ' '.join([str(val).upper() for val in row.values])
                     if 'FULL NAME' in row_str or 'TÊN' in row_str:
                         df_excel = pd.read_excel(BytesIO(excel_bytes), skiprows=idx, dtype=str)
                         is_tour_format = True
@@ -176,14 +176,11 @@ if xml_file and excel_file:
                 # ---------------- BƯỚC 3: SMART MAPPING & FUZZY MATCH ----------------
                 name_to_rooms = df_opera.groupby('Ten_Khach_Opera')['So_Phong'].apply(list).to_dict()
                 
-                # Bộ nhớ đệm cho đảo tên (Ví dụ: "NGUYEN VAN A" và "A NGUYEN VAN" sẽ cùng chung 1 set chữ)
                 fuzzy_name_map = {frozenset(k.split()): k for k in name_to_rooms.keys()}
 
                 def get_possible_rooms(excel_name):
-                    # Khớp chính xác
                     if excel_name in name_to_rooms:
                         return name_to_rooms[excel_name]
-                    # Khớp đảo tên (Fuzzy)
                     excel_set = frozenset(excel_name.split())
                     if excel_set in fuzzy_name_map:
                         real_op_name = fuzzy_name_map[excel_set]
@@ -220,7 +217,6 @@ if xml_file and excel_file:
                         grp = row['Nhom_Phong']
                         if pd.notna(grp) and str(grp).strip() not in ["", "NAN", "NAT", "NONE"]:
                             return group_to_room.get(grp, "Chưa gán được")
-                        # Không có nhóm -> Gán lẻ
                         rooms = get_possible_rooms(row['Ten_Khach_Excel'])
                         if rooms:
                             rm = rooms[0]
@@ -251,7 +247,6 @@ if xml_file and excel_file:
 
                 df_compare = pd.merge(df_opera, df_excel, on=['So_Phong', 'Guest_Index'], how='outer', indicator=True)
                 
-                # Check lệch Bus
                 bus_conflicts = []
                 for room, group in df_compare.groupby('So_Phong'):
                     if room == "Chưa gán được" or pd.isna(room): continue
@@ -276,7 +271,6 @@ if xml_file and excel_file:
                         else:
                             date_mismatch = (str(row['Ngay_Den_Opera']) != str(row['Ngay_Den_Excel'])) or (str(row['Ngay_Di_Opera']) != str(row['Ngay_Di_Excel']))
                             
-                        # Dùng Fuzzy Match để check tên (Tránh báo lỗi ảo khi đảo tên)
                         name_op = str(row['Ten_Khach_Opera'])
                         name_ex = str(row['Ten_Khach_Excel'])
                         name_mismatch = set(name_op.split()) != set(name_ex.split())
@@ -305,17 +299,14 @@ if xml_file and excel_file:
                 cols = ['So_Phong', 'Quoc_Tich', 'Canh_Bao_Bus', 'Trang_Thai', 'Ten_Khach_Opera', 'Ten_Khach_Excel', 'Bus_Excel', 'Nhom_Phong', 'Ngay_Den_Opera', 'Ngay_Di_Opera', 'Ngay_Den_Excel', 'Ngay_Di_Excel']
                 df_compare = df_compare[cols]
 
-                # Sheet 1: Lỗi / Nước ngoài / Lệch Bus
                 df_errors = df_compare[
                     (df_compare['Trang_Thai'] != 'Khớp hoàn toàn') | 
                     (df_compare['Canh_Bao_Bus'] != "") |
                     (df_compare['Quoc_Tich'] == '🌍 Nước Ngoài')
                 ].sort_values(by=['Trang_Thai', 'So_Phong'])
                 
-                # Sheet 2: Danh sách Tổng
                 df_full = df_compare.sort_values(by=['So_Phong', 'Ten_Khach_Opera'])
 
-                # Sheet 3: Danh sách Cắt Key - Chia Bus
                 df_valid_rooms = df_compare[df_compare['So_Phong'].astype(str).str.strip() != "Chưa gán được"].copy()
                 df_valid_rooms['Bus_Excel'] = df_valid_rooms['Bus_Excel'].replace(['', 'NAN', 'NAT', 'NONE'], 'Tự túc / KHÔNG CÓ XE')
                 df_valid_rooms['Ten_Hien_Thi'] = df_valid_rooms.apply(lambda r: str(r['Ten_Khach_Opera']) if pd.notna(r['Ten_Khach_Opera']) and str(r['Ten_Khach_Opera']).strip() != 'NAN' else str(r['Ten_Khach_Excel']), axis=1)
@@ -342,7 +333,6 @@ if xml_file and excel_file:
                 with tab3:
                     st.dataframe(df_key_cut, use_container_width=True)
 
-                # Xuất ra Excel
                 output = BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df_errors.to_excel(writer, index=False, sheet_name='Phong_Can_Luu_Y')
