@@ -9,32 +9,44 @@ import re
 st.set_page_config(page_title="Rooming List Checker", page_icon="🏨", layout="wide")
 
 # ==============================================================================
-# HÀM LÀM SẠCH DỮ LIỆU (MỚI THÊM)
+# BỘ LỌC LÀM SẠCH DỮ LIỆU ĐÃ ĐƯỢC FIX LỖI "CHỮ Đ" VÀ NGÀY THÁNG
 # ==============================================================================
 def normalize_name(name):
-    """Hàm bóc tách tiếng Việt có dấu, xóa ký tự lạ và danh xưng Mr/Ms"""
+    """Hàm bóc tách tiếng Việt, xử lý chữ Đ và xóa danh xưng"""
     if not isinstance(name, str) or pd.isna(name):
         return ""
+    # SỬA LỖI CHỮ Đ: Thay thế Đ thành D trước khi xóa dấu
+    name = name.replace('Đ', 'D').replace('đ', 'd')
+    
     # Chuyển tiếng Việt có dấu thành không dấu
     name = unicodedata.normalize('NFD', name).encode('ascii', 'ignore').decode('utf-8')
     name = name.upper()
-    # Chỉ giữ lại chữ cái và khoảng trắng (xóa dấu *, dấu phẩy, v.v.)
+    
+    # Chỉ giữ lại chữ cái và khoảng trắng (xóa dấu *, phẩy, v.v.)
     name = re.sub(r'[^A-Z\s]', ' ', name)
-    # Xóa các danh xưng MR, MS, MRS, MISS ở bất kỳ vị trí nào
+    
+    # Xóa các danh xưng MR, MS, MRS, MISS
     name = re.sub(r'\b(MR|MS|MRS|MISS)\b', '', name)
-    # Xóa khoảng trắng thừa giữa các từ
+    
+    # Xóa khoảng trắng thừa
     name = ' '.join(name.split())
     return name
 
 def normalize_date(date_val):
-    """Hàm ép tất cả ngày tháng (của cả Excel và Opera) về chuẩn DD-MM-YY"""
+    """Hàm ép định dạng ngày tháng thông minh"""
     if pd.isna(date_val) or str(date_val).strip() in ["", "NAN", "NAT"]:
         return ""
+    val_str = str(date_val).strip()
     try:
-        dt = pd.to_datetime(str(date_val).strip(), dayfirst=True)
+        # Nếu chuỗi bắt đầu bằng YYYY-MM-DD (Định dạng của Excel ẩn bên trong)
+        if len(val_str) >= 10 and val_str[4] == '-':
+            dt = pd.to_datetime(val_str)
+        else:
+            # Nếu là chuỗi người dùng gõ kiểu DD-MM-YY hoặc DD/MM/YY
+            dt = pd.to_datetime(val_str, dayfirst=True)
         return dt.strftime('%d-%m-%y')
     except:
-        return str(date_val).strip()
+        return val_str
 
 # ==============================================================================
 # HÀM TẠO FILE EXCEL MẪU
@@ -60,7 +72,7 @@ def create_template_excel():
 # ==============================================================================
 # GIAO DIỆN CHÍNH
 # ==============================================================================
-st.title("Phần mềm Đối chiếu Rooming List (Bản Chuẩn Trí Tuệ Nhân Tạo)")
+st.title("Phần mềm Đối chiếu Rooming List (Bản Cập Nhật Vá Lỗi)")
 
 with st.info("Tải file Excel mẫu về máy để điền thông tin đoàn trước khi tải lên (Để trống 'So_Phong' nếu muốn Tool tự gán)."):
     st.download_button(
@@ -83,10 +95,10 @@ if xml_file and excel_file:
         start_check = st.button("🚀 Bắt đầu đối chiếu", type="primary", use_container_width=True)
 
     if start_check:
-        with st.spinner("Đang làm sạch dữ liệu, tự động gán phòng và xử lý khách ghép..."):
+        with st.spinner("Đang làm sạch dữ liệu (Xử lý chữ Đ, đổi Format ngày), tự động gán phòng và check Share Room..."):
             try:
                 # ---------------------------------------------------------
-                # BƯỚC 1: BÓC TÁCH FILE XML (OPERA) VÀ LÀM SẠCH
+                # BƯỚC 1: BÓC TÁCH FILE XML (OPERA)
                 # ---------------------------------------------------------
                 tree = ET.parse(xml_file)
                 root = tree.getroot()
@@ -108,7 +120,7 @@ if xml_file and excel_file:
                 opera_all_names = df_opera['Ten_Khach_Opera'].tolist()
 
                 # ---------------------------------------------------------
-                # BƯỚC 2: ĐỌC FILE EXCEL (KHÁCH ĐOÀN) VÀ LÀM SẠCH
+                # BƯỚC 2: ĐỌC FILE EXCEL (KHÁCH ĐOÀN)
                 # ---------------------------------------------------------
                 df_excel = pd.read_excel(excel_file, dtype=str)
                 if 'Ten_Khach' in df_excel.columns:
@@ -119,7 +131,6 @@ if xml_file and excel_file:
                 
                 df_excel = df_excel.rename(columns={'Ngay_Den': 'Ngay_Den_Excel', 'Ngay_Di': 'Ngay_Di_Excel'})
                 
-                # Làm sạch ngày tháng Excel
                 if 'Ngay_Den_Excel' in df_excel.columns:
                     df_excel['Ngay_Den_Excel'] = df_excel['Ngay_Den_Excel'].apply(normalize_date)
                 if 'Ngay_Di_Excel' in df_excel.columns:
@@ -238,7 +249,7 @@ if xml_file and excel_file:
                     st.download_button(
                         label="📥 TẢI FILE BÁO CÁO CÁC LỖI ĐỐI CHIẾU",
                         data=output.getvalue(),
-                        file_name="Bao_Cao_Rooming_List_Nang_Cao.xlsx",
+                        file_name="Bao_Cao_Rooming_List_Da_Sua_Loi.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True
                     )
