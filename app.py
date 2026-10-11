@@ -243,3 +243,36 @@ if xml_file and excel_file:
                     st.dataframe(df_full.style.apply(highlight_foreigner, subset=['Quoc_Tich']), use_container_width=True)
 
                 # Tạo file Excel có 2 Sheets
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df_errors.to_excel(writer, index=False, sheet_name='Phong_Can_Luu_Y')
+                    df_full.to_excel(writer, index=False, sheet_name='Danh_Sach_Tong')
+                    
+                    for sheet_name in ['Phong_Can_Luu_Y', 'Danh_Sach_Tong']:
+                        worksheet = writer.sheets[sheet_name]
+                        for column in worksheet.columns:
+                            max_length = 0
+                            column_letter = column[0].column_letter
+                            for cell in column:
+                                try:
+                                    if len(str(cell.value)) > max_length:
+                                        max_length = len(str(cell.value))
+                                except:
+                                    pass
+                            worksheet.column_dimensions[column_letter].width = max_length + 2
+
+                # Nút tải xuống file báo cáo cuối cùng BẮT BUỘC PHẢI CÓ DÒNG EXCEPT SAU NÓ
+                st.markdown("<br>", unsafe_allow_html=True)
+                _, dwn_col, _ = st.columns([1, 1, 1])
+                with dwn_col:
+                    st.download_button(
+                        label="📥 TẢI FILE BÁO CÁO CÓ 2 SHEET (EXCEL)",
+                        data=output.getvalue(),
+                        file_name="Bao_Cao_Rooming_List_Chia_Sheet.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+
+            # ĐÂY LÀ DÒNG EXCEPT MÀ BẠN ĐÃ COPY THIẾU DẪN ĐẾN LỖI
+            except Exception as e:
+                st.error(f"Đã xảy ra lỗi hệ thống: {e}")
