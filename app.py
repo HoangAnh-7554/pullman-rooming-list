@@ -28,6 +28,8 @@ VN_SYLLABLE_STRICT = re.compile(
     re.IGNORECASE
 )
 
+UNASSIGNED_OPERA_LABEL = "⏳ Chưa gán phòng (Opera)"
+
 def normalize_name(name):
     """Làm sạch tiếng Việt, sửa lỗi chữ Đ, xóa danh xưng & học hàm/học vị (PGS, TS, MD, Assoc. Prof...)"""
     if pd.isna(name) or str(name).strip().upper() in ["", "NAN", "NAT", "NONE"]: 
@@ -51,11 +53,13 @@ def is_valid_guest_row(raw_name):
             return False
     return True
 
-def normalize_room(room):
-    """Khắc phục lỗi mất số 0 ở đầu của Excel (Ví dụ: 402 -> 0402)"""
-    if pd.isna(room): return ""
+def normalize_room(room, is_opera=False):
+    """Khắc phục lỗi mất số 0 ở đầu của Excel (Ví dụ: 402 -> 0402) và đánh nhãn phòng trống trên Opera"""
+    if pd.isna(room): 
+        return UNASSIGNED_OPERA_LABEL if is_opera else ""
     r = str(room).replace('.0', '').strip().upper()
-    if r in ["", "NAN", "NAT", "NONE"]: return ""
+    if r in ["", "NAN", "NAT", "NONE"]: 
+        return UNASSIGNED_OPERA_LABEL if is_opera else ""
     if r.isdigit() and len(r) == 3:
         return '0' + r
     return r
@@ -262,7 +266,7 @@ def create_template_excel():
 # ==============================================================================
 st.title("Phần mềm Đối chiếu Rooming List (Ultimate Master)")
 
-with st.info("Hỗ trợ đọc thẳng mọi định dạng file Tour (Company Trip & Hội nghị). Tự động nhận diện phòng ghép, lọc học hàm/học vị, bắt ghi chú Late C/O và kiểm tra lệch giường."):
+with st.info("Hỗ trợ đọc thẳng mọi định dạng file Tour (Company Trip & Hội nghị). Tự động nhận diện phòng ghép, lọc học hàm/học vị, cảnh báo phòng chưa gán trên Opera và bắt ghi chú Late C/O."):
     st.download_button(
         label="📥 TẢI FILE EXCEL MẪU TRẮNG",
         data=create_template_excel(),
@@ -297,6 +301,7 @@ if xml_file and excel_file:
                 tree = ET.parse(xml_file)
                 root = tree.getroot()
                 opera_guests = []
+                cf_rooms_total = 0
                 for guest in root.iter('G_CONFIRMATION_NO'):
                     status = guest.find('RESV_STATUS').text if guest.find('RESV_STATUS') is not None else ''
                     if 'CANCEL' in str(status).upper(): continue
@@ -306,9 +311,12 @@ if xml_file and excel_file:
                     room_cat = guest.find('ROOM_CATEGORY_LABEL').text if guest.find('ROOM_CATEGORY_LABEL') is not None else ''
                     arrival = guest.find('ARRIVAL').text if guest.find('ARRIVAL') is not None else ''
                     departure = guest.find('DEPARTURE').text if guest.find('DEPARTURE') is not None else ''
+                    cf_rm = guest.find('CF_NO_OF_ROOMS').text if guest.find('CF_NO_OF_ROOMS') is not None else '0'
+                    if str(cf_rm).strip().isdigit():
+                        cf_rooms_total += int(str(cf_rm).strip())
                     
                     opera_guests.append({
-                        'So_Phong': normalize_room(room),
+                        'So_Phong': normalize_room(room, is_opera=True),
                         'Ten_Khach_Opera': normalize_name(name),
                         'Loai_Phong_Opera': str(room_cat).strip(),
                         'Ngay_Den_Opera': normalize_date(arrival),
@@ -352,7 +360,7 @@ if xml_file and excel_file:
                 df_excel['Ten_Khach_Excel'] = df_excel[col_name].apply(normalize_name)
 
                 if col_room and is_real_room_column(df_excel[col_room]):
-                    df_excel['So_Phong'] = df_excel[col_room].apply(normalize_room)
+                    df_excel['So_Phong'] = df_excel[col_room].apply(lambda x: normalize_room(x, is_opera=False))
                 else:
                     df_excel['So_Phong'] = ""
 
@@ -470,7 +478,7 @@ if xml_file and excel_file:
                 
                 bus_conflicts = []
                 for room, group in df_compare.groupby('So_Phong'):
-                    if room == "Chưa gán được" or pd.isna(room): continue
+                    if room in ["Chưa gán được", UNASSIGNED_OPERA_LABEL] or pd.isna(room): continue
                     valid_buses = group['Bus_Excel'].astype(str).replace(['NAN', '', 'NONE', 'NAT'], pd.NA).dropna().unique()
                     if len(valid_buses) > 1: bus_conflicts.append(room)
                 
@@ -500,7 +508,9 @@ if xml_file and excel_file:
                 )
 
                 def deep_check_status(row):
-                    if str(row['So_Phong']) == "Chưa gán được": return "Lỗi nặng: Khách Excel không có trên hệ thống Opera"
+                    rm_str = str(row['So_Phong']).strip()
+                    is_unassigned_opera = (rm_str == UNASSIGNED_OPERA_LABEL)
+                    if rm_str == "Chưa gán được": return "Lỗi nặng: Khách Excel không có trên hệ thống Opera"
                     if row['_merge'] == 'left_only': return "Hủy phòng / Excel gửi sót khách này"
                     if row['_merge'] == 'right_only': return "Phát sinh thêm người ghép" if row['Guest_Index'] > 0 else "Phòng mới (Có trong Excel, chưa có trên Opera)"
                     
@@ -523,6 +533,8 @@ if xml_file and excel_file:
                         if name_mismatch and date_mismatch: return "Sai lệch KÉP (Sai tên & Lịch trình)"
                         elif name_mismatch: return "Sai lệch Tên khách"
                         elif date_mismatch: return "Sai lệch ngày In/Out"
+                        if is_unassigned_opera:
+                            return "📌 Chưa gán số phòng trên Opera (Đã khớp tên & ngày)"
                         return "Khớp hoàn toàn"
                     return "Cần kiểm tra thủ công"
 
@@ -530,16 +542,17 @@ if xml_file and excel_file:
                 
                 # ---------------- BƯỚC 5: DASHBOARD & XUẤT SHEET ----------------
                 tong_khach_opera = len(df_opera)
-                tong_phong_opera = df_opera['So_Phong'].nunique()
+                assigned_rooms_opera = df_opera[~df_opera['So_Phong'].isin(['', 'NAN', 'NAT', 'NONE', 'CHƯA GÁN ĐƯỢC', UNASSIGNED_OPERA_LABEL])]['So_Phong'].nunique()
+                tong_phong_opera = cf_rooms_total if cf_rooms_total > 0 else assigned_rooms_opera
                 tong_khach_excel = len(df_excel)
-                tong_phong_excel = df_excel['So_Phong'].astype(str).replace(['', 'NAN', 'NAT', 'NONE', 'CHƯA GÁN ĐƯỢC'], np.nan).dropna().nunique()
+                tong_phong_da_gan = df_excel[~df_excel['So_Phong'].isin(['', 'NAN', 'NAT', 'NONE', 'CHƯA GÁN ĐƯỢC', UNASSIGNED_OPERA_LABEL])]['So_Phong'].nunique()
 
                 st.markdown("### 📊 THỐNG KÊ TỔNG QUAN ĐOÀN")
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Tổng Khách (Opera)", f"{tong_khach_opera} pax")
                 m2.metric("Tổng Phòng (Opera)", f"{tong_phong_opera} phòng")
                 m3.metric("Tổng Khách (Excel)", f"{tong_khach_excel} pax", delta=f"{tong_khach_excel - tong_khach_opera} khách" if tong_khach_excel != tong_khach_opera else None)
-                m4.metric("Tổng Phòng (Đã Gán)", f"{tong_phong_excel} phòng", delta=f"{tong_phong_excel - tong_phong_opera} phòng" if tong_phong_excel != tong_phong_opera else None)
+                m4.metric("Phòng Đã Xếp Số", f"{tong_phong_da_gan}/{tong_phong_opera} phòng", delta=f"-{tong_phong_opera - tong_phong_da_gan} phòng chưa gán số" if tong_phong_opera > tong_phong_da_gan else None)
 
                 cols = [
                     'So_Phong', 'Quoc_Tich', 'Trang_Thai', 'Canh_Bao_Bus', 'Canh_Bao_Loai_Phong', 'Ghi_Chu_Van_Hanh',
@@ -560,26 +573,40 @@ if xml_file and excel_file:
                 
                 df_full = df_compare.sort_values(by=['So_Phong', 'Ten_Khach_Opera'])
 
+                # Sheet 3: Bảng Cắt Key - Chia Bus (Tách riêng từng phòng chưa gán số theo Nhóm/STT)
                 df_valid_rooms = df_compare[df_compare['So_Phong'].astype(str).str.strip() != "Chưa gán được"].copy()
                 df_valid_rooms['Bus_Excel'] = df_valid_rooms['Bus_Excel'].replace(['', 'NAN', 'NAT', 'NONE'], 'Tự túc / KHÔNG CÓ XE')
                 df_valid_rooms['Ten_Hien_Thi'] = df_valid_rooms.apply(
                     lambda r: str(r['Ten_Khach_Opera']) if pd.notna(r['Ten_Khach_Opera']) and str(r['Ten_Khach_Opera']).strip() not in ['', 'NAN'] else str(r['Ten_Khach_Excel']), axis=1
                 )
+
+                def make_room_display_key(row):
+                    sp = str(row['So_Phong']).strip()
+                    if sp == UNASSIGNED_OPERA_LABEL:
+                        nhom = str(row.get('Nhom_Phong', '')).replace('.0', '').strip()
+                        if nhom and nhom.upper() not in ['', 'NAN', 'NONE']:
+                            return f"⏳ Chưa gán phòng (Nhóm/STT {nhom})"
+                        return f"⏳ Chưa gán phòng ({row['Ten_Hien_Thi']})"
+                    return sp
+
+                df_valid_rooms['Phong_Chia_Key'] = df_valid_rooms.apply(make_room_display_key, axis=1)
                 
-                df_key_cut = df_valid_rooms.groupby(['Bus_Excel', 'So_Phong']).agg(
+                df_key_cut = df_valid_rooms.groupby(['Bus_Excel', 'Phong_Chia_Key']).agg(
                     Loai_Phong=('Loai_Phong_Opera', 'first'),
                     So_Luong_The_Can_Cat=('Ten_Hien_Thi', 'count'),
                     Danh_Sach_Khach_Trong_Phong=('Ten_Hien_Thi', lambda x: '  |  '.join([str(i) for i in x if str(i).strip() not in ["", "NAN"]])),
                     Ghi_Chu=('Ghi_Chu_Van_Hanh', lambda x: ' | '.join(set([str(i) for i in x if str(i).strip() not in ["", "NAN"]])))
                 ).reset_index()
-                df_key_cut = df_key_cut.rename(columns={'Bus_Excel': 'Chuyến Xe (Bus)', 'So_Phong': 'Số Phòng'})
+                df_key_cut = df_key_cut.rename(columns={'Bus_Excel': 'Chuyến Xe (Bus)', 'Phong_Chia_Key': 'Số Phòng'})
                 df_key_cut = df_key_cut.sort_values(by=['Chuyến Xe (Bus)', 'Số Phòng'])
 
                 st.markdown("---")
-                st.success("✅ Phân tích hoàn tất! Đã xử lý tự động học hàm/học vị, gộp phòng Merge Cell, bắt ghi chú vận hành và kiểm tra chéo lịch trình.")
+                st.success("✅ Phân tích hoàn tất! Đã cảnh báo các phòng chưa gán số trên Opera, xử lý học hàm/học vị và bắt ghi chú vận hành.")
                 
                 def highlight_special(s):
-                    if str(s.get('Trang_Thai', '')) != 'Khớp hoàn toàn': return ['background-color: #ffb3b3'] * len(s)
+                    status_str = str(s.get('Trang_Thai', ''))
+                    if '📌 Chưa gán số phòng' in status_str: return ['background-color: #cce5ff'] * len(s)
+                    if status_str != 'Khớp hoàn toàn': return ['background-color: #ffb3b3'] * len(s)
                     if '⚠️' in str(s.get('Canh_Bao_Loai_Phong', '')): return ['background-color: #ffff99'] * len(s)
                     if '⚠️' in str(s.get('Canh_Bao_Bus', '')): return ['background-color: #ffe5b4'] * len(s)
                     if str(s.get('Ghi_Chu_Van_Hanh', '')) != '': return ['background-color: #d9f2d9'] * len(s)
@@ -588,7 +615,7 @@ if xml_file and excel_file:
                 
                 tab1, tab2, tab3 = st.tabs(["⚠️ BẢNG CẦN LƯU Ý", "📋 DANH SÁCH TỔNG ĐOÀN", "🔑 BẢNG LÀM THẺ KHÓA (CHIA BUS)"])
                 with tab1:
-                    if df_errors.empty: st.info("🎉 Tuyệt vời! Đoàn khớp 100%, đi chung Bus, đúng loại giường và hoàn toàn thuần Việt.")
+                    if df_errors.empty: st.info("🎉 Tuyệt vời! Đoàn khớp 100%, đã gán đủ phòng, đi chung Bus, đúng loại giường và hoàn toàn thuần Việt.")
                     else: st.dataframe(df_errors.style.apply(highlight_special, axis=1), use_container_width=True)
                 with tab2:
                     st.dataframe(df_full.style.apply(highlight_special, axis=1), use_container_width=True)
