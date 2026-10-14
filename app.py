@@ -76,7 +76,6 @@ def is_real_group_column(series):
     if not valid_vals:
         return False
     val_counts = pd.Series(valid_vals).value_counts()
-    # Một phòng khách sạn không thể ghép quá 6 người; nếu > 6 người cùng 1 mã nhóm thì đó là cột Chức danh/Bộ phận
     if val_counts.max() > 6:
         return False
     return True
@@ -183,7 +182,6 @@ def pair_guests_in_rooms(df_opera, df_excel):
         used_op = set()
         guest_idx = 0
         
-        # Bước 1: Ưu tiên ghép các khách có tập hợp từ trong tên trùng khớp 100% (kể cả đảo thứ tự họ tên)
         for i_op, op_g in enumerate(op_sub):
             op_words = set(str(op_g['Ten_Khach_Opera']).split())
             for i_ex, ex_g in enumerate(ex_sub):
@@ -199,7 +197,6 @@ def pair_guests_in_rooms(df_opera, df_excel):
                     guest_idx += 1
                     break
                     
-        # Bước 2: Ghép các khách còn lại trong phòng theo độ tương đồng chữ cái cao nhất
         rem_op = [i for i in range(len(op_sub)) if i not in used_op]
         rem_ex = [i for i in range(len(ex_sub)) if i not in used_ex]
         
@@ -282,7 +279,7 @@ with col2:
 
 if xml_file and excel_file:
     excel_bytes = excel_file.read()
-    xls_ inspect = pd.ExcelFile(BytesIO(excel_bytes))
+    xls_inspect = pd.ExcelFile(BytesIO(excel_bytes))
     sheet_list = xls_inspect.sheet_names
     
     selected_sheet = sheet_list[0]
@@ -351,17 +348,14 @@ if xml_file and excel_file:
                     st.error("Lỗi: Không tìm thấy cột 'Tên Khách' / 'Họ tên' trong file Excel.")
                     st.stop()
 
-                # Lọc bỏ dòng trống và dòng 'Tổng số phòng' / 'Total' TRƯỚC khi xử lý gộp phòng
                 df_excel = df_excel[df_excel[col_name].apply(is_valid_guest_row)].copy()
                 df_excel['Ten_Khach_Excel'] = df_excel[col_name].apply(normalize_name)
 
-                # Kiểm tra cột Số phòng thật hay cột đếm số lượng phòng (1, 1, 1...)
                 if col_room and is_real_room_column(df_excel[col_room]):
                     df_excel['So_Phong'] = df_excel[col_room].apply(normalize_room)
                 else:
                     df_excel['So_Phong'] = ""
 
-                # Nhận diện Nhóm ở ghép (Phân biệt cột Shared Room thật với cột Chức danh/Vai trò Hội nghị)
                 if col_group and is_real_group_column(df_excel[col_group]):
                     df_excel['Nhom_Phong'] = df_excel[col_group].fillna("")
                 else:
@@ -380,7 +374,6 @@ if xml_file and excel_file:
                 else:
                     df_excel['Loai_Phong_Excel'] = ""
 
-                # Trích xuất Ghi chú vận hành (Late C/O, Extra Bed, VIP...)
                 raw_notes_series = pd.Series([""] * len(df_excel), index=df_excel.index)
                 if col_note:
                     raw_notes_series = raw_notes_series + " " + df_excel[col_note].fillna("")
@@ -400,10 +393,8 @@ if xml_file and excel_file:
                     fuzzy_name_map[frozenset(k.split())].append(k)
 
                 def get_possible_rooms(excel_name):
-                    # Tầng 1: Khớp chính xác
                     if excel_name in name_to_rooms and name_to_rooms[excel_name]:
                         return list(name_to_rooms[excel_name])
-                    # Tầng 2: Khớp đảo thứ tự Họ Tên
                     excel_set = frozenset(excel_name.split())
                     if excel_set in fuzzy_name_map:
                         rooms = []
@@ -411,7 +402,6 @@ if xml_file and excel_file:
                             rooms.extend(name_to_rooms.get(real_op_name, []))
                         if rooms:
                             return rooms
-                    # Tầng 3: Khớp mờ chống lỗi đánh máy 1-2 ký tự (Độ giống >= 88%)
                     for op_name, r_list in name_to_rooms.items():
                         if r_list and SequenceMatcher(None, excel_name, op_name).ratio() >= 0.88:
                             return list(r_list)
@@ -478,7 +468,6 @@ if xml_file and excel_file:
 
                 df_compare = pair_guests_in_rooms(df_opera, df_excel)
                 
-                # Cảnh báo khác tuyến xe Bus trong cùng 1 phòng
                 bus_conflicts = []
                 for room, group in df_compare.groupby('So_Phong'):
                     if room == "Chưa gán được" or pd.isna(room): continue
@@ -490,7 +479,6 @@ if xml_file and excel_file:
                     lambda x: f"⚠️ Khác Bus ({x})" if pd.notna(x) and str(x).strip().upper() not in ["", "NAN"] else ""
                 )
 
-                # Cảnh báo lệch Loại Phòng (Giường King / Twin)
                 def check_room_type(row):
                     op_rt = standardize_room_type(row.get('Loai_Phong_Opera', ''))
                     ex_rt = standardize_room_type(row.get('Loai_Phong_Excel', ''))
@@ -562,7 +550,6 @@ if xml_file and excel_file:
                     if c not in df_compare.columns: df_compare[c] = ""
                 df_compare = df_compare[cols]
 
-                # Sheet 1: Phòng Cần Lưu Ý (Lỗi + Lệch Bus + Lệch Giường + Ghi chú Late C/O, Extra Bed + Khách Nước Ngoài)
                 df_errors = df_compare[
                     (df_compare['Trang_Thai'] != 'Khớp hoàn toàn') | 
                     (df_compare['Canh_Bao_Bus'] != "") |
@@ -571,10 +558,8 @@ if xml_file and excel_file:
                     (df_compare['Quoc_Tich'] == '🌍 Nước Ngoài')
                 ].sort_values(by=['So_Phong', 'Trang_Thai'])
                 
-                # Sheet 2: Danh sách Tổng
                 df_full = df_compare.sort_values(by=['So_Phong', 'Ten_Khach_Opera'])
 
-                # Sheet 3: Bảng Cắt Key - Chia Bus
                 df_valid_rooms = df_compare[df_compare['So_Phong'].astype(str).str.strip() != "Chưa gán được"].copy()
                 df_valid_rooms['Bus_Excel'] = df_valid_rooms['Bus_Excel'].replace(['', 'NAN', 'NAT', 'NONE'], 'Tự túc / KHÔNG CÓ XE')
                 df_valid_rooms['Ten_Hien_Thi'] = df_valid_rooms.apply(
