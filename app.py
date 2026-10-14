@@ -5,13 +5,11 @@ import numpy as np
 from io import BytesIO
 import unicodedata
 import re
-from collections import defaultdict
-from difflib import SequenceMatcher
 
 st.set_page_config(page_title="Rooming List Checker Master", page_icon="🏨", layout="wide")
 
 # ==============================================================================
-# 1. CẤU HÌNH NHẬN DIỆN ÂM TIẾT TIẾNG VIỆT & BỘ LỌC LÀM SẠCH DỮ LIỆU
+# 1. BỘ LỌC LÀM SẠCH, CHUẨN HÓA VÀ NHẬN DIỆN THÔNG MINH
 # ==============================================================================
 VN_SYLLABLE_STRICT = re.compile(
     r'^('
@@ -30,12 +28,12 @@ VN_SYLLABLE_STRICT = re.compile(
 
 def normalize_name(name):
     """Làm sạch tiếng Việt, sửa lỗi chữ Đ, xóa danh xưng & học hàm/học vị (PGS, TS, MD, Assoc. Prof...)"""
-    if pd.isna(name) or str(name).strip().upper() in ["", "NAN", "NAT", "NONE"]: 
+    if pd.isna(name) or str(name).strip() in ["", "NAN", "NAT", "NONE"]: 
         return ""
     name = str(name).replace('Đ', 'D').replace('đ', 'd')
     name = unicodedata.normalize('NFD', name).encode('ascii', 'ignore').decode('utf-8').upper()
     name = re.sub(r'[^A-Z\s]', ' ', name)
-    name = re.sub(r'\b(MR|MS|MRS|MISS|MSTR|DR|PROF|ASSOC|ASST|PGS|GS|TS|THS|BS|CKI|CKII|MD|PHD|MBA|BSC|MSC|CHILD|BABY|INFANT)\b', '', name)
+    name = re.sub(r'\b(MR|MS|MRS|MISS|MSTR|DR|PROF|ASSOC|PGS|GS|TS|THS|BS|MD|PHD|CHILD)\b', '', name)
     return ' '.join(name.split())
 
 def is_valid_guest_row(raw_name):
@@ -45,7 +43,7 @@ def is_valid_guest_row(raw_name):
     if s in ["", "NAN", "NAT", "NONE"]: return False
     norm_s = normalize_name(s)
     if norm_s == "": return False
-    summary_keywords = ['TONG SO PHONG', 'TONG CONG', 'TONG SO', 'TOTAL', 'GRAND TOTAL', 'SUBTOTAL', 'TONG KHACH']
+    summary_keywords = ['TONG SO PHONG', 'TONG CONG', 'TONG SO', 'TOTAL', 'GRAND TOTAL', 'SUBTOTAL']
     for kw in summary_keywords:
         if kw in norm_s:
             return False
@@ -61,8 +59,8 @@ def normalize_room(room):
     return r
 
 def is_real_room_column(series):
-    """Phân biệt cột Số phòng thật (0201, 0402...) với cột đếm số lượng phòng (1, 1, 1...)"""
-    valid_vals = [str(v).replace('.0', '').strip() for v in series.dropna() if str(v).strip().upper() not in ["", "NAN", "NAT", "NONE"]]
+    """Kiểm tra xem cột 'Số phòng' là số phòng thật (0201, 0402...) hay chỉ là cột đếm số lượng phòng (1, 1, 1...)"""
+    valid_vals = [str(v).replace('.0', '').strip() for v in series.dropna() if str(v).strip() not in ["", "NAN", "NAT", "NONE"]]
     if not valid_vals:
         return False
     numeric_vals = [int(v) for v in valid_vals if v.isdigit()]
@@ -70,20 +68,9 @@ def is_real_room_column(series):
         return False
     return True
 
-def is_real_group_column(series):
-    """Phân biệt cột Nhóm Phòng (Shared room) với cột Chức danh/Vai trò (Chủ tọa, Báo cáo viên...)"""
-    valid_vals = [str(v).replace('.0', '').strip() for v in series.dropna() if str(v).strip().upper() not in ["", "NAN", "NAT", "NONE"]]
-    if not valid_vals:
-        return False
-    val_counts = pd.Series(valid_vals).value_counts()
-    # Một phòng khách sạn không thể ghép quá 6 người; nếu > 6 người cùng 1 mã nhóm thì đó là cột Chức danh/Bộ phận
-    if val_counts.max() > 6:
-        return False
-    return True
-
 def normalize_date(date_val):
     """Chuẩn hóa ngày tháng về định dạng chuẩn DD-MM-YY"""
-    if pd.isna(date_val) or str(date_val).strip().upper() in ["", "NAN", "NAT", "NONE"]: 
+    if pd.isna(date_val) or str(date_val).strip() in ["", "NAN", "NAT", "NONE"]: 
         return ""
     val_str = str(date_val).strip()
     try:
@@ -97,7 +84,7 @@ def normalize_date(date_val):
 
 def standardize_room_type(rt):
     """Chuẩn hóa Loại phòng (King/Twin/Single) để so sánh chéo"""
-    if pd.isna(rt) or str(rt).strip().upper() in ["", "NAN", "NAT", "NONE"]: 
+    if pd.isna(rt) or str(rt).strip() in ["", "NAN", "NAT", "NONE"]: 
         return "UNKNOWN"
     rt_str = str(rt).upper().strip()
     if 'TWIN' in rt_str or 'TWB' in rt_str or re.search(r'\bTW\b', rt_str):
@@ -106,30 +93,9 @@ def standardize_room_type(rt):
         return "KING"
     return "UNKNOWN"
 
-def extract_special_notes(text):
-    """Tự động phát hiện các yêu cầu đặc biệt: Late Check-out, Early Check-in, Extra Bed, Baby Cot, VIP"""
-    if pd.isna(text) or str(text).strip().upper() in ["", "NAN", "NAT", "NONE"]:
-        return ""
-    s_raw = ' '.join(str(text).replace('\n', ' - ').split())
-    s_up = s_raw.upper()
-    notes = []
-    if any(k in s_up for k in ['LATE', 'CHECKOUT LATE', 'LATE CHECK OUT', 'LATE C/O', 'TRẢ MUỘN', 'TRA MUON']):
-        notes.append(f"⏰ Late C/O ({s_raw})")
-    elif any(k in s_up for k in ['EARLY', 'SỚM', 'EARLY C/I']):
-        notes.append(f"🌅 Early C/I ({s_raw})")
-    if any(k in s_up for k in ['EXTRA BED', 'EXB', 'GIƯỜNG PHỤ', 'GHÉP GIƯỜNG', 'GHEP GIUONG']):
-        notes.append(f"🛏️ Extra/Ghép ({s_raw})")
-    if any(k in s_up for k in ['BABY COT', 'CRIB', 'NÔI']):
-        notes.append(f"👶 Baby Cot ({s_raw})")
-    if 'VIP' in s_up:
-        notes.append(f"⭐ VIP ({s_raw})")
-    return " | ".join(notes)
-
-def guess_nationality(name, excel_foreigner_flag=""):
-    """Phát hiện khách nước ngoài qua cột đánh dấu Excel HOẶC cấu trúc âm tiết tiếng Việt"""
-    if pd.notna(excel_foreigner_flag) and str(excel_foreigner_flag).strip().upper() not in ["", "NAN", "NAT", "NONE", "0", "0.0", "NO", "N", "FALSE", "VN", "VIET NAM", "VIETNAM", "VIỆT NAM"]:
-        return "🌍 Nước Ngoài"
-    if pd.isna(name) or str(name).strip().upper() in ["", "NAN", "NAT", "NONE"]: 
+def guess_nationality(name):
+    """Phát hiện khách nước ngoài (Châu Âu & Châu Á) thông qua cấu trúc âm tiết tiếng Việt"""
+    if pd.isna(name) or str(name).strip() in ["", "NAN", "NAT", "NONE"]: 
         return "Chưa rõ"
     words = str(name).upper().strip().split()
     if not words:
@@ -143,99 +109,15 @@ def find_column(df, keywords):
     """Tự động tìm kiếm tên cột (Ưu tiên khớp chính xác 100% trước khi khớp một phần)"""
     for kw in keywords:
         for col in df.columns:
-            c_clean = ' '.join(str(col).upper().replace('_', ' ').replace('-', ' ').replace('\n', ' ').split())
+            c_clean = str(col).upper().replace('_', ' ').replace('-', ' ').strip()
             if kw.strip() == c_clean:
                 return col
     for kw in keywords:
         for col in df.columns:
-            c_clean = ' '.join(str(col).upper().replace('_', ' ').replace('-', ' ').replace('\n', ' ').split())
+            c_clean = str(col).upper().replace('_', ' ').replace('-', ' ')
             if kw in c_clean:
                 return col
     return None
-
-def pair_guests_in_rooms(df_opera, df_excel):
-    """Ghép cặp khách thông minh bên trong từng phòng để chống lệch thứ tự khi tên bị đảo chữ"""
-    paired_rows = []
-    all_rooms = sorted(list(set(df_opera['So_Phong'].dropna().unique()).union(set(df_excel['So_Phong'].dropna().unique()))))
-    
-    for room in all_rooms:
-        op_sub = df_opera[df_opera['So_Phong'] == room].to_dict('records')
-        ex_sub = df_excel[df_excel['So_Phong'] == room].to_dict('records')
-        
-        if room == "Chưa gán được" or not op_sub or not ex_sub:
-            max_len = max(len(op_sub), len(ex_sub))
-            for i in range(max_len):
-                row_dict = {'So_Phong': room, 'Guest_Index': i}
-                if i < len(op_sub) and i < len(ex_sub):
-                    row_dict.update(op_sub[i])
-                    row_dict.update(ex_sub[i])
-                    row_dict['_merge'] = 'both'
-                elif i < len(op_sub):
-                    row_dict.update(op_sub[i])
-                    row_dict['_merge'] = 'left_only'
-                else:
-                    row_dict.update(ex_sub[i])
-                    row_dict['_merge'] = 'right_only'
-                paired_rows.append(row_dict)
-            continue
-            
-        used_ex = set()
-        used_op = set()
-        guest_idx = 0
-        
-        # Bước 1: Ưu tiên ghép các khách có tập hợp từ trong tên trùng khớp 100% (kể cả đảo thứ tự họ tên)
-        for i_op, op_g in enumerate(op_sub):
-            op_words = set(str(op_g['Ten_Khach_Opera']).split())
-            for i_ex, ex_g in enumerate(ex_sub):
-                if i_ex in used_ex: continue
-                ex_words = set(str(ex_g['Ten_Khach_Excel']).split())
-                if op_words == ex_words:
-                    used_op.add(i_op)
-                    used_ex.add(i_ex)
-                    r = {'So_Phong': room, 'Guest_Index': guest_idx, '_merge': 'both'}
-                    r.update(op_g)
-                    r.update(ex_g)
-                    paired_rows.append(r)
-                    guest_idx += 1
-                    break
-                    
-        # Bước 2: Ghép các khách còn lại trong phòng theo độ tương đồng chữ cái cao nhất
-        rem_op = [i for i in range(len(op_sub)) if i not in used_op]
-        rem_ex = [i for i in range(len(ex_sub)) if i not in used_ex]
-        
-        while rem_op and rem_ex:
-            best_pair = (rem_op[0], rem_ex[0])
-            best_score = -1
-            for i_op in rem_op:
-                for i_ex in rem_ex:
-                    s_op = ' '.join(sorted(str(op_sub[i_op]['Ten_Khach_Opera']).split()))
-                    s_ex = ' '.join(sorted(str(ex_sub[i_ex]['Ten_Khach_Excel']).split()))
-                    score = SequenceMatcher(None, s_op, s_ex).ratio()
-                    if score > best_score:
-                        best_score = score
-                        best_pair = (i_op, i_ex)
-            i_op, i_ex = best_pair
-            rem_op.remove(i_op)
-            rem_ex.remove(i_ex)
-            r = {'So_Phong': room, 'Guest_Index': guest_idx, '_merge': 'both'}
-            r.update(op_sub[i_op])
-            r.update(ex_sub[i_ex])
-            paired_rows.append(r)
-            guest_idx += 1
-            
-        for i_op in rem_op:
-            r = {'So_Phong': room, 'Guest_Index': guest_idx, '_merge': 'left_only'}
-            r.update(op_sub[i_op])
-            paired_rows.append(r)
-            guest_idx += 1
-            
-        for i_ex in rem_ex:
-            r = {'So_Phong': room, 'Guest_Index': guest_idx, '_merge': 'right_only'}
-            r.update(ex_sub[i_ex])
-            paired_rows.append(r)
-            guest_idx += 1
-            
-    return pd.DataFrame(paired_rows)
 
 # ==============================================================================
 # 2. TẠO FILE EXCEL MẪU
@@ -248,15 +130,14 @@ def create_template_excel():
         'Nhom_Phong': ['1', '2', '2', '3'],
         'Bus': ['Bus 1', 'Bus 2', 'Bus 2', 'Bus 3'],
         'Ngay_Den': ['03-10-26', '03-10-26', '03-10-26', '03-10-26'],
-        'Ngay_Di': ['04-10-26', '04-10-26', '04-10-26', '05-10-26'],
-        'Ghi_Chu': ['VIP', '', '', 'Late check out 18/10']
+        'Ngay_Di': ['04-10-26', '04-10-26', '04-10-26', '05-10-26']
     }
     df_template = pd.DataFrame(data)
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_template.to_excel(writer, index=False, sheet_name='Danh_Sach_Doan')
         ws = writer.sheets['Danh_Sach_Doan']
-        for col, width in zip(['A','B','C','D','E','F','G','H'], [15, 30, 15, 15, 15, 18, 18, 25]):
+        for col, width in zip(['A','B','C','D','E','F','G'], [15, 30, 15, 15, 15, 20, 20]):
             ws.column_dimensions[col].width = width
     return output.getvalue()
 
@@ -265,7 +146,7 @@ def create_template_excel():
 # ==============================================================================
 st.title("Phần mềm Đối chiếu Rooming List (Ultimate Master)")
 
-with st.info("Hỗ trợ đọc thẳng mọi định dạng file Tour (Company Trip & Hội nghị). Tự động nhận diện phòng ghép, lọc học hàm/học vị, bắt ghi chú Late C/O và kiểm tra lệch giường."):
+with st.info("Hỗ trợ đọc thẳng mọi định dạng file Tour (Company Trip & Hội nghị). Tự động nhận diện phòng ghép, lọc học hàm/học vị và kiểm tra lệch giường."):
     st.download_button(
         label="📥 TẢI FILE EXCEL MẪU TRẮNG",
         data=create_template_excel(),
@@ -281,14 +162,6 @@ with col2:
     excel_file = st.file_uploader("2. Tải lên file Excel (Từ Khách đoàn / TA)", type=['xlsx', 'xls'])
 
 if xml_file and excel_file:
-    excel_bytes = excel_file.read()
-    xls_ inspect = pd.ExcelFile(BytesIO(excel_bytes))
-    sheet_list = xls_inspect.sheet_names
-    
-    selected_sheet = sheet_list[0]
-    if len(sheet_list) > 1:
-        selected_sheet = st.selectbox("📑 File Excel có nhiều Sheet, vui lòng chọn Sheet chứa Rooming List:", sheet_list)
-
     _, btn_col, _ = st.columns([1, 1, 1])
     with btn_col:
         start_check = st.button("🚀 Bắt đầu Quét Đa Luồng", type="primary", use_container_width=True)
@@ -320,32 +193,31 @@ if xml_file and excel_file:
                 df_opera = pd.DataFrame(opera_guests)
 
                 # ---------------- BƯỚC 2: ĐỌC EXCEL ĐOÀN AUTO-DETECT ----------------
-                df_raw = pd.read_excel(BytesIO(excel_bytes), sheet_name=selected_sheet, header=None)
+                excel_bytes = excel_file.read()
+                df_raw = pd.read_excel(BytesIO(excel_bytes), header=None)
                 
                 is_tour_format = False
                 skip_count = 0
                 for idx, row in df_raw.head(15).iterrows():
                     row_str = ' '.join([str(val).upper() for val in row.values])
-                    if any(k in row_str for k in ['FULL NAME', 'TÊN KHÁCH', 'HỌ VÀ TÊN', 'HỌ TÊN', 'GUEST NAME']):
+                    if any(k in row_str for k in ['FULL NAME', 'TÊN KHÁCH', 'HỌ VÀ TÊN', 'HỌ TÊN']):
                         skip_count = idx
                         is_tour_format = True
                         break
                 
                 if is_tour_format:
-                    df_excel = pd.read_excel(BytesIO(excel_bytes), sheet_name=selected_sheet, skiprows=skip_count, dtype=str)
+                    df_excel = pd.read_excel(BytesIO(excel_bytes), skiprows=skip_count, dtype=str)
                 else:
-                    df_excel = pd.read_excel(BytesIO(excel_bytes), sheet_name=selected_sheet, dtype=str)
+                    df_excel = pd.read_excel(BytesIO(excel_bytes), dtype=str)
 
                 # MAP CỘT THÔNG MINH
                 col_name = find_column(df_excel, ['FULL NAME', 'TEN KHACH', 'TÊN KHÁCH', 'HỌ VÀ TÊN', 'HỌ TÊN', 'GUEST NAME', 'GUEST'])
                 col_room = find_column(df_excel, ['ROOM NO', 'ROOM NUMBER', 'SO PHONG', 'SỐ PHÒNG'])
                 col_room_type = find_column(df_excel, ['ROOM TYPE', 'LOAI PHONG', 'LOẠI PHÒNG', 'GHI CHÚ', 'GHI CHU', 'NOTE'])
-                col_note = find_column(df_excel, ['GHI CHÚ', 'GHI CHU', 'NOTE', 'REMARK', 'SPECIAL REQUEST'])
-                col_group = find_column(df_excel, ['SHARED ROOM', 'NHOM PHONG', 'NHÓM PHÒNG', 'SHARE ROOM', 'SHARE', 'NHÓM', 'NHOM'])
+                col_group = find_column(df_excel, ['SHARED ROOM', 'NHOM PHONG', 'NHÓM PHÒNG', 'SHARE ROOM', 'SHARE'])
                 col_bus = find_column(df_excel, ['BUS', 'CHUYEN XE', 'CHUYẾN XE', 'SỐ XE', 'SO XE'])
                 col_in = find_column(df_excel, ['CHECK IN', 'CHECKIN', 'ARRIVAL', 'NGAY DEN', 'NGÀY ĐẾN'])
                 col_out = find_column(df_excel, ['CHECK OUT', 'CHECKOUT', 'DEPARTURE', 'NGAY DI', 'NGÀY ĐI'])
-                col_foreign = find_column(df_excel, ['FOREIGNER', 'QUOC TICH', 'QUỐC TỊCH', 'NATIONALITY'])
 
                 if not col_name:
                     st.error("Lỗi: Không tìm thấy cột 'Tên Khách' / 'Họ tên' trong file Excel.")
@@ -361,8 +233,8 @@ if xml_file and excel_file:
                 else:
                     df_excel['So_Phong'] = ""
 
-                # Nhận diện Nhóm ở ghép (Phân biệt cột Shared Room thật với cột Chức danh/Vai trò Hội nghị)
-                if col_group and is_real_group_column(df_excel[col_group]):
+                # Nhận diện Nhóm ở ghép (Shared Room hoặc gộp ô STT)
+                if col_group:
                     df_excel['Nhom_Phong'] = df_excel[col_group].fillna("")
                 else:
                     first_col = df_excel.columns[0]
@@ -380,41 +252,21 @@ if xml_file and excel_file:
                 else:
                     df_excel['Loai_Phong_Excel'] = ""
 
-                # Trích xuất Ghi chú vận hành (Late C/O, Extra Bed, VIP...)
-                raw_notes_series = pd.Series([""] * len(df_excel), index=df_excel.index)
-                if col_note:
-                    raw_notes_series = raw_notes_series + " " + df_excel[col_note].fillna("")
-                if col_room_type and col_room_type != col_note:
-                    raw_notes_series = raw_notes_series + " " + df_excel[col_room_type].fillna("")
-                df_excel['Ghi_Chu_Van_Hanh'] = raw_notes_series.apply(extract_special_notes)
-
-                df_excel['Foreign_Flag_Excel'] = df_excel[col_foreign].fillna("") if col_foreign else ""
                 df_excel['Bus_Excel'] = df_excel[col_bus].fillna("") if col_bus else ""
                 df_excel['Ngay_Den_Excel'] = df_excel[col_in].apply(normalize_date) if col_in else ""
                 df_excel['Ngay_Di_Excel'] = df_excel[col_out].apply(normalize_date) if col_out else ""
 
-                # ---------------- BƯỚC 3: SMART MAPPING & MULTI-LAYER FUZZY MATCH ----------------
+                # ---------------- BƯỚC 3: SMART MAPPING & FUZZY MATCH ----------------
                 name_to_rooms = df_opera.groupby('Ten_Khach_Opera')['So_Phong'].apply(list).to_dict()
-                fuzzy_name_map = defaultdict(list)
-                for k in name_to_rooms.keys():
-                    fuzzy_name_map[frozenset(k.split())].append(k)
+                fuzzy_name_map = {frozenset(k.split()): k for k in name_to_rooms.keys()}
 
                 def get_possible_rooms(excel_name):
-                    # Tầng 1: Khớp chính xác
-                    if excel_name in name_to_rooms and name_to_rooms[excel_name]:
-                        return list(name_to_rooms[excel_name])
-                    # Tầng 2: Khớp đảo thứ tự Họ Tên
+                    if excel_name in name_to_rooms:
+                        return name_to_rooms[excel_name]
                     excel_set = frozenset(excel_name.split())
                     if excel_set in fuzzy_name_map:
-                        rooms = []
-                        for real_op_name in fuzzy_name_map[excel_set]:
-                            rooms.extend(name_to_rooms.get(real_op_name, []))
-                        if rooms:
-                            return rooms
-                    # Tầng 3: Khớp mờ chống lỗi đánh máy 1-2 ký tự (Độ giống >= 88%)
-                    for op_name, r_list in name_to_rooms.items():
-                        if r_list and SequenceMatcher(None, excel_name, op_name).ratio() >= 0.88:
-                            return list(r_list)
+                        real_op_name = fuzzy_name_map[excel_set]
+                        return name_to_rooms[real_op_name]
                     return []
 
                 def consume_room(excel_name, room_to_consume):
@@ -423,19 +275,14 @@ if xml_file and excel_file:
                         return
                     excel_set = frozenset(excel_name.split())
                     if excel_set in fuzzy_name_map:
-                        for real_op_name in fuzzy_name_map[excel_set]:
-                            if room_to_consume in name_to_rooms.get(real_op_name, []):
-                                name_to_rooms[real_op_name].remove(room_to_consume)
-                                return
-                    for op_name, r_list in name_to_rooms.items():
-                        if room_to_consume in r_list and SequenceMatcher(None, excel_name, op_name).ratio() >= 0.88:
-                            r_list.remove(room_to_consume)
-                            return
+                        real_op_name = fuzzy_name_map[excel_set]
+                        if room_to_consume in name_to_rooms[real_op_name]:
+                            name_to_rooms[real_op_name].remove(room_to_consume)
 
                 if df_excel['Nhom_Phong'].str.strip().astype(bool).any():
                     group_to_room = {}
                     for grp, grp_df in df_excel.groupby('Nhom_Phong'):
-                        if pd.isna(grp) or str(grp).strip().upper() in ["", "NAN", "NAT", "NONE"]: continue
+                        if pd.isna(grp) or str(grp).strip() in ["", "NAN", "NAT", "NONE"]: continue
                         
                         possible_rooms = []
                         for name in grp_df['Ten_Khach_Excel']:
@@ -449,7 +296,7 @@ if xml_file and excel_file:
                                     
                     def assign_by_group(row):
                         grp = row['Nhom_Phong']
-                        if pd.notna(grp) and str(grp).strip().upper() not in ["", "NAN", "NAT", "NONE"]:
+                        if pd.notna(grp) and str(grp).strip() not in ["", "NAN", "NAT", "NONE"]:
                             return group_to_room.get(grp, "Chưa gán được")
                         rooms = get_possible_rooms(row['Ten_Khach_Excel'])
                         if rooms:
@@ -476,9 +323,12 @@ if xml_file and excel_file:
                 df_opera = df_opera.sort_values(by=['So_Phong', 'Ten_Khach_Opera'])
                 df_excel = df_excel.sort_values(by=['So_Phong', 'Ten_Khach_Excel'])
 
-                df_compare = pair_guests_in_rooms(df_opera, df_excel)
+                df_opera['Guest_Index'] = df_opera.groupby('So_Phong').cumcount()
+                df_excel['Guest_Index'] = df_excel.groupby('So_Phong').cumcount()
+
+                df_compare = pd.merge(df_opera, df_excel, on=['So_Phong', 'Guest_Index'], how='outer', indicator=True)
                 
-                # Cảnh báo khác tuyến xe Bus trong cùng 1 phòng
+                # Cảnh báo khác tuyến xe Bus
                 bus_conflicts = []
                 for room, group in df_compare.groupby('So_Phong'):
                     if room == "Chưa gán được" or pd.isna(room): continue
@@ -487,7 +337,7 @@ if xml_file and excel_file:
                 
                 df_compare['Canh_Bao_Bus'] = ""
                 df_compare.loc[df_compare['So_Phong'].isin(bus_conflicts), 'Canh_Bao_Bus'] = df_compare['Bus_Excel'].apply(
-                    lambda x: f"⚠️ Khác Bus ({x})" if pd.notna(x) and str(x).strip().upper() not in ["", "NAN"] else ""
+                    lambda x: f"⚠️ Khác Bus ({x})" if pd.notna(x) and str(x).strip() not in ["", "NAN"] else ""
                 )
 
                 # Cảnh báo lệch Loại Phòng (Giường King / Twin)
@@ -497,19 +347,12 @@ if xml_file and excel_file:
                     if ex_rt == "UNKNOWN" or op_rt == "UNKNOWN":
                         return ""
                     if op_rt != ex_rt:
-                        ex_clean = ' '.join(str(row.get('Loai_Phong_Excel','')).split())
-                        return f"⚠️ Lệch Giường (Opera: {row.get('Loai_Phong_Opera','')} | Excel: {ex_clean})"
+                        return f"⚠️ Lệch Giường (Opera: {row.get('Loai_Phong_Opera','')} | Excel: {row.get('Loai_Phong_Excel','')})"
                     return ""
                 
                 df_compare['Canh_Bao_Loai_Phong'] = df_compare.apply(check_room_type, axis=1)
-                df_compare['Ghi_Chu_Van_Hanh'] = df_compare.get('Ghi_Chu_Van_Hanh', pd.Series([""] * len(df_compare))).fillna("")
 
-                df_compare['Quoc_Tich'] = df_compare.apply(
-                    lambda row: guess_nationality(
-                        row['Ten_Khach_Opera'] if pd.notna(row.get('Ten_Khach_Opera')) and str(row.get('Ten_Khach_Opera')).strip() != "" else row.get('Ten_Khach_Excel', ''),
-                        row.get('Foreign_Flag_Excel', '')
-                    ), axis=1
-                )
+                df_compare['Quoc_Tich'] = df_compare.apply(lambda row: guess_nationality(row['Ten_Khach_Opera']) if pd.notna(row['Ten_Khach_Opera']) else guess_nationality(row['Ten_Khach_Excel']), axis=1)
 
                 def deep_check_status(row):
                     if str(row['So_Phong']) == "Chưa gán được": return "Lỗi nặng: Khách Excel không có trên hệ thống Opera"
@@ -517,21 +360,15 @@ if xml_file and excel_file:
                     if row['_merge'] == 'right_only': return "Phát sinh thêm người ghép" if row['Guest_Index'] > 0 else "Phòng mới (Có trong Excel, chưa có trên Opera)"
                     
                     if row['_merge'] == 'both':
-                        if str(row.get('Ngay_Den_Excel', '')).strip() in ['NAN', ''] and str(row.get('Ngay_Di_Excel', '')).strip() in ['NAN', '']:
+                        if str(row['Ngay_Den_Excel']).strip() in ['NAN', ''] and str(row['Ngay_Di_Excel']).strip() in ['NAN', '']:
                             date_mismatch = False
                         else:
-                            date_mismatch = (str(row.get('Ngay_Den_Opera', '')) != str(row.get('Ngay_Den_Excel', ''))) or (str(row.get('Ngay_Di_Opera', '')) != str(row.get('Ngay_Di_Excel', '')))
+                            date_mismatch = (str(row['Ngay_Den_Opera']) != str(row['Ngay_Den_Excel'])) or (str(row['Ngay_Di_Opera']) != str(row['Ngay_Di_Excel']))
                             
-                        name_op = str(row.get('Ten_Khach_Opera', ''))
-                        name_ex = str(row.get('Ten_Khach_Excel', ''))
-                        exact_words = set(name_op.split()) == set(name_ex.split())
-                        typo_similarity = SequenceMatcher(None, ' '.join(sorted(name_op.split())), ' '.join(sorted(name_ex.split()))).ratio()
+                        name_op = str(row['Ten_Khach_Opera'])
+                        name_ex = str(row['Ten_Khach_Excel'])
+                        name_mismatch = set(name_op.split()) != set(name_ex.split())
                         
-                        if not exact_words and typo_similarity >= 0.88:
-                            if date_mismatch: return "Sai lệch KÉP (Gõ sai chính tả tên & Lệch ngày)"
-                            return "⚠️ Nghi ngờ gõ sai chính tả tên (Khớp 90%)"
-                            
-                        name_mismatch = not exact_words
                         if name_mismatch and date_mismatch: return "Sai lệch KÉP (Sai tên & Lịch trình)"
                         elif name_mismatch: return "Sai lệch Tên khách"
                         elif date_mismatch: return "Sai lệch ngày In/Out"
@@ -551,54 +388,38 @@ if xml_file and excel_file:
                 m1.metric("Tổng Khách (Opera)", f"{tong_khach_opera} pax")
                 m2.metric("Tổng Phòng (Opera)", f"{tong_phong_opera} phòng")
                 m3.metric("Tổng Khách (Excel)", f"{tong_khach_excel} pax", delta=f"{tong_khach_excel - tong_khach_opera} khách" if tong_khach_excel != tong_khach_opera else None)
-                m4.metric("Tổng Phòng (Đã Gán)", f"{tong_phong_excel} phòng", delta=f"{tong_phong_excel - tong_phong_opera} phòng" if tong_phong_excel != tong_phong_opera else None)
+                m4.metric("Tổng Phòng (Excel)", f"{tong_phong_excel} phòng", delta=f"{tong_phong_excel - tong_phong_opera} phòng" if tong_phong_excel != tong_phong_opera else None)
 
-                cols = [
-                    'So_Phong', 'Quoc_Tich', 'Trang_Thai', 'Canh_Bao_Bus', 'Canh_Bao_Loai_Phong', 'Ghi_Chu_Van_Hanh',
-                    'Ten_Khach_Opera', 'Ten_Khach_Excel', 'Loai_Phong_Opera', 'Loai_Phong_Excel',
-                    'Bus_Excel', 'Nhom_Phong', 'Ngay_Den_Opera', 'Ngay_Di_Opera', 'Ngay_Den_Excel', 'Ngay_Di_Excel'
-                ]
-                for c in cols:
-                    if c not in df_compare.columns: df_compare[c] = ""
+                cols = ['So_Phong', 'Quoc_Tich', 'Canh_Bao_Bus', 'Canh_Bao_Loai_Phong', 'Trang_Thai', 'Ten_Khach_Opera', 'Ten_Khach_Excel', 'Loai_Phong_Opera', 'Loai_Phong_Excel', 'Bus_Excel', 'Nhom_Phong', 'Ngay_Den_Opera', 'Ngay_Di_Opera', 'Ngay_Den_Excel', 'Ngay_Di_Excel']
                 df_compare = df_compare[cols]
 
-                # Sheet 1: Phòng Cần Lưu Ý (Lỗi + Lệch Bus + Lệch Giường + Ghi chú Late C/O, Extra Bed + Khách Nước Ngoài)
                 df_errors = df_compare[
                     (df_compare['Trang_Thai'] != 'Khớp hoàn toàn') | 
                     (df_compare['Canh_Bao_Bus'] != "") |
                     (df_compare['Canh_Bao_Loai_Phong'] != "") |
-                    (df_compare['Ghi_Chu_Van_Hanh'] != "") |
                     (df_compare['Quoc_Tich'] == '🌍 Nước Ngoài')
-                ].sort_values(by=['So_Phong', 'Trang_Thai'])
+                ].sort_values(by=['Trang_Thai', 'So_Phong'])
                 
-                # Sheet 2: Danh sách Tổng
                 df_full = df_compare.sort_values(by=['So_Phong', 'Ten_Khach_Opera'])
 
-                # Sheet 3: Bảng Cắt Key - Chia Bus
                 df_valid_rooms = df_compare[df_compare['So_Phong'].astype(str).str.strip() != "Chưa gán được"].copy()
                 df_valid_rooms['Bus_Excel'] = df_valid_rooms['Bus_Excel'].replace(['', 'NAN', 'NAT', 'NONE'], 'Tự túc / KHÔNG CÓ XE')
-                df_valid_rooms['Ten_Hien_Thi'] = df_valid_rooms.apply(
-                    lambda r: str(r['Ten_Khach_Opera']) if pd.notna(r['Ten_Khach_Opera']) and str(r['Ten_Khach_Opera']).strip() not in ['', 'NAN'] else str(r['Ten_Khach_Excel']), axis=1
-                )
+                df_valid_rooms['Ten_Hien_Thi'] = df_valid_rooms.apply(lambda r: str(r['Ten_Khach_Opera']) if pd.notna(r['Ten_Khach_Opera']) and str(r['Ten_Khach_Opera']).strip() != 'NAN' else str(r['Ten_Khach_Excel']), axis=1)
                 
                 df_key_cut = df_valid_rooms.groupby(['Bus_Excel', 'So_Phong']).agg(
-                    Loai_Phong=('Loai_Phong_Opera', 'first'),
                     So_Luong_The_Can_Cat=('Ten_Hien_Thi', 'count'),
-                    Danh_Sach_Khach_Trong_Phong=('Ten_Hien_Thi', lambda x: '  |  '.join([str(i) for i in x if str(i).strip() not in ["", "NAN"]])),
-                    Ghi_Chu=('Ghi_Chu_Van_Hanh', lambda x: ' | '.join(set([str(i) for i in x if str(i).strip() not in ["", "NAN"]])))
+                    Danh_Sach_Khach_Trong_Phong=('Ten_Hien_Thi', lambda x: '  |  '.join([str(i) for i in x if str(i).strip() not in ["", "NAN"]]))
                 ).reset_index()
                 df_key_cut = df_key_cut.rename(columns={'Bus_Excel': 'Chuyến Xe (Bus)', 'So_Phong': 'Số Phòng'})
                 df_key_cut = df_key_cut.sort_values(by=['Chuyến Xe (Bus)', 'Số Phòng'])
 
                 st.markdown("---")
-                st.success("✅ Phân tích hoàn tất! Đã xử lý tự động học hàm/học vị, gộp phòng Merge Cell, bắt ghi chú vận hành và kiểm tra chéo lịch trình.")
+                st.success("✅ Phân tích hoàn tất! Đã xử lý tự động học hàm/học vị, gộp phòng Merge Cell và kiểm tra chéo lịch trình.")
                 
                 def highlight_special(s):
-                    if str(s.get('Trang_Thai', '')) != 'Khớp hoàn toàn': return ['background-color: #ffb3b3'] * len(s)
+                    if s.get('Quoc_Tich') == '🌍 Nước Ngoài': return ['background-color: #ffcccc'] * len(s)
                     if '⚠️' in str(s.get('Canh_Bao_Loai_Phong', '')): return ['background-color: #ffff99'] * len(s)
                     if '⚠️' in str(s.get('Canh_Bao_Bus', '')): return ['background-color: #ffe5b4'] * len(s)
-                    if str(s.get('Ghi_Chu_Van_Hanh', '')) != '': return ['background-color: #d9f2d9'] * len(s)
-                    if s.get('Quoc_Tich') == '🌍 Nước Ngoài': return ['background-color: #ffcccc'] * len(s)
                     return [''] * len(s)
                 
                 tab1, tab2, tab3 = st.tabs(["⚠️ BẢNG CẦN LƯU Ý", "📋 DANH SÁCH TỔNG ĐOÀN", "🔑 BẢNG LÀM THẺ KHÓA (CHIA BUS)"])
@@ -608,7 +429,7 @@ if xml_file and excel_file:
                 with tab2:
                     st.dataframe(df_full.style.apply(highlight_special, axis=1), use_container_width=True)
                 with tab3:
-                    st.info("💡 Lễ tân dùng bảng này để cắt thẻ phòng theo xấp tương ứng với từng chuyến Bus hoặc in gửi cho Tour Leader / Bellman.")
+                    st.info("💡 Lễ tân dùng bảng này để cắt và chia thẻ phòng theo xấp tương ứng với từng chuyến Bus.")
                     st.dataframe(df_key_cut, use_container_width=True)
 
                 # ---------------- BƯỚC 6: XUẤT EXCEL ----------------
@@ -622,7 +443,7 @@ if xml_file and excel_file:
                         worksheet = writer.sheets[sheet_name]
                         for column in worksheet.columns:
                             max_length = max((len(str(cell.value)) for cell in column), default=0)
-                            worksheet.column_dimensions[column[0].column_letter].width = min(max_length + 3, 55)
+                            worksheet.column_dimensions[column[0].column_letter].width = min(max_length + 2, 50)
 
                 st.markdown("<br>", unsafe_allow_html=True)
                 _, dwn_col, _ = st.columns([1, 1, 1])
